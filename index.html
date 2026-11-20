@@ -1,332 +1,281 @@
-<!doctype html>
-<html lang="ko" data-theme="light">
+<!DOCTYPE html>
+<html lang="ko">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="format-detection" content="telephone=no" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>아이돌 시뮬레이터</title>
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Gowun+Dodum&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <header>
-    <div class="header-inner">
-      <div class="brand" role="banner">
-        <div class="logo" aria-hidden="true"></div>
-        <div class="title">
-          <strong>아이돌 시뮬레이터</strong>
-          <span id="topStatus">Day 1 · 소지금 0</span>
-        </div>
-      </div>
 
-      <div class="toolbar">
-        <button class="pill" id="themeBtn" type="button">🌙 테마</button>
-        <button class="pill" id="saveBtn" type="button">💾 저장</button>
-        <button class="pill" id="loadBtn" type="button">📂 불러오기</button>
-        <button class="pill" id="exportBtn" type="button">⬇️ 내보내기</button>
-        <button class="pill" id="exportMembersBtn" type="button">👥 멤버만</button>
-        <button class="pill" id="logTxtBtn" type="button">🧾 로그TXT</button>
-        <button class="pill danger" id="resetBtn" type="button">🧨 전체 초기화</button>
+<!-- ── 헤더 ── -->
+<header id="app-header">
+  <span class="app-title">🎤 아이돌 시뮬레이터</span>
+  <div class="header-actions">
+    <span class="header-day"   id="header-day-disp">Day 1</span>
+    <span class="header-money" id="header-money-disp">5,000원</span>
+    <button class="header-icon-btn" id="header-theme-btn" onclick="onToggleTheme()" title="라이트/다크 전환">🌙</button>
+  </div>
+</header>
+
+<!-- ── 탭 네비 ── -->
+<nav id="tab-nav">
+  <button class="tab-btn active" data-tab="dashboard">대시보드</button>
+  <button class="tab-btn" data-tab="members">멤버</button>
+  <button class="tab-btn" data-tab="schedule">스케줄</button>
+  <button class="tab-btn" data-tab="relations">관계·이벤트</button>
+  <button class="tab-btn" data-tab="album">앨범·콘서트</button>
+  <button class="tab-btn" data-tab="settings">설정</button>
+  <button class="tab-btn" data-tab="log">로그</button>
+  <!-- 저장/불러오기 버튼 그룹 (항상 탭 바에 노출) -->
+  <div class="tab-save-group">
+    <button class="tab-save-btn" onclick="onSave()"         title="저장">💾</button>
+    <button class="tab-save-btn" onclick="onExport()"       title="전체 내보내기">📤</button>
+    <button class="tab-save-btn" onclick="onImport()"       title="불러오기">📥</button>
+    <button class="tab-save-btn" onclick="onExportLog()"    title="로그 TXT">📄</button>
+    <button class="tab-save-btn" onclick="onExportMembers()" title="멤버 내보내기">👥↑</button>
+    <button class="tab-save-btn" onclick="onImportMembers()" title="멤버 불러오기">👥↓</button>
+    <button class="tab-save-btn tab-save-danger" onclick="onReset()" title="초기화">🗑️</button>
+  </div>
+  <input type="file" id="import-file"         accept=".json" style="display:none" onchange="onImportFile(this)">
+  <input type="file" id="import-members-file" accept=".json" style="display:none" onchange="onImportMembersFile(this)">
+</nav>
+
+<!-- ── 메인 ── -->
+<main id="main-content">
+
+  <!-- 대시보드 -->
+  <section id="tab-dashboard" class="tab-panel active">
+    <div class="dash-grid">
+      <div class="dash-stat"><div class="dash-stat-label">그룹</div>
+        <div class="dash-stat-value" id="dash-group" style="font-size:.85rem">—</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">📅 날짜</div>
+        <div class="dash-stat-value" id="dash-day">Day 1</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">💰 소지금</div>
+        <div class="dash-stat-value" id="dash-money" style="font-size:.95rem">5,000원</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">⭐ 인기도</div>
+        <div class="dash-stat-value" id="dash-pop">0</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">💜 팬덤</div>
+        <div class="dash-stat-value" id="dash-fandom">0</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">🏆 평판</div>
+        <div class="dash-stat-value" id="dash-rep">0</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">👥 멤버</div>
+        <div class="dash-stat-value" id="dash-members">0명</div></div>
+      <div class="dash-stat"><div class="dash-stat-label">💿 컴백</div>
+        <div class="dash-stat-value" id="dash-album" style="font-size:.78rem">없음</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">오늘 스케줄</div>
+      <div id="dash-schedule" style="font-size:.83rem;color:var(--text-sub)">배정 없음 (다음날 진행 시 전원 자동 휴식)</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Day 진행</div>
+      <div class="dash-actions">
+        <button class="btn btn-day"  onclick="onNextDay()">▶ 다음날</button>
+        <button class="btn btn-day btn-day2" onclick="onNext7Days()">⏩ 7일 진행</button>
+      </div>
+      <p class="note" style="margin-top:6px">스케줄 미배정 시 전원 자동 휴식 / 컨디션 불량 시 강제 휴식</p>
+    </div>
+
+    <div class="log-section-title">최근 로그</div>
+    <div class="log-mini" id="log-mini-dash"></div>
+  </section>
+
+  <!-- 멤버 -->
+  <section id="tab-members" class="tab-panel">
+    <div class="section-header">
+      <div>
+        <span class="group-label" id="member-group">그룹명 미설정</span>
+        <span style="margin-left:8px;font-size:.78rem;color:var(--text-sub)" id="member-count">멤버 0명</span>
+      </div>
+      <button class="btn" onclick="openAddMember()">+ 멤버 추가</button>
+    </div>
+    <div class="member-grid" id="member-list">
+      <div class="empty-hint">멤버가 없습니다. 멤버를 추가해주세요.</div>
+    </div>
+  </section>
+
+  <!-- 수동 스케줄 -->
+  <section id="tab-schedule" class="tab-panel">
+    <div class="section-header">
+      <h2>수동 스케줄 배정</h2>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-ghost" onclick="clearSchedule()">초기화</button>
+        <button class="btn btn-ghost" onclick="onSmartAssignManual()" title="소지금·컨디션을 고려해 랜덤 배정">🎲 랜덤 배정</button>
+        <button class="btn" onclick="applySchedule()">확정</button>
+      </div>
+    </div>
+    <div class="schedule-notes">
+      <span>📌 음악방송·팬싸 = 컴백 중에만 가능, 선택 시 전원 자동 배정</span>
+      <span>📌 미선택 멤버는 다음날 실행 시 자동 휴식</span>
+    </div>
+    <div id="schedule-list"></div>
+    <div class="divider"></div>
+    <div class="log-section-title">최근 로그</div>
+    <div class="log-mini" id="log-mini-schedule"></div>
+  </section>
+
+  <!-- 관계·이벤트 -->
+  <section id="tab-relations" class="tab-panel">
+
+    <!-- 1. 관계도 -->
+    <div class="card rel-card">
+      <div class="rel-section-title">
+        <span>관계도</span>
+        <div class="legend-wrap" id="graph-legend"></div>
+      </div>
+      <div id="graph-canvas" style="min-height:280px;margin-top:6px"></div>
+    </div>
+
+    <!-- 2. 관계 수치 조회 -->
+    <div class="card rel-card">
+      <div class="rel-section-title">
+        <span>관계 수치</span>
+        <span class="note">호감도 ±200 · 연인 기준 150</span>
+      </div>
+      <div id="relation-table"></div>
+    </div>
+
+    <!-- 3. 수동 관계 이벤트 -->
+    <div class="card rel-card">
+      <div class="rel-section-title"><span>수동 관계 이벤트</span></div>
+      <div id="relation-event-panel"></div>
+    </div>
+
+    <!-- 4. 최근 로그 -->
+    <div class="log-section-title" style="margin-top:12px">관계 관련 최근 로그</div>
+    <div class="log-mini" id="log-mini-relation"></div>
+
+  </section>
+
+  <!-- 앨범·콘서트 -->
+  <section id="tab-album" class="tab-panel">
+    <div class="section-header"><h2>앨범·콘서트</h2></div>
+
+    <div class="card">
+      <div class="card-title">앨범 진행률</div>
+      <div id="album-progress">
+        <div class="empty-hint">앨범 준비를 시작하려면 아래 버튼을 누르세요</div>
+      </div>
+      <div class="album-actions">
+        <button class="btn" onclick="onStartAlbum()">📀 앨범 준비 시작</button>
+        <button class="btn" onclick="onReleaseAlbum()">🚀 앨범 발매 (-500원)</button>
+      </div>
+      <p class="note" style="margin-top:6px">
+        보컬 연습 → 보컬 진행률 / 안무 연습 → 안무 진행률<br>
+        작사작곡·편곡 연습은 해당 항목에 반영됩니다
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">콘서트</div>
+      <div class="concert-info">상태: <span id="concert-status">예정 없음</span></div>
+      <div class="album-actions">
+        <button class="btn" onclick="onPlanConcert()">🎪 콘서트 예약 (-1,000원)</button>
+      </div>
+      <p class="note" style="margin-top:6px">예약 비용 1,000원 / 수익 2,000~3,000원 / 준비 기간 3~30일</p>
+    </div>
+  </section>
+
+  <!-- 설정 -->
+  <section id="tab-settings" class="tab-panel">
+    <div class="settings-section">
+      <h3>그룹 정보</h3>
+      <div class="settings-row">
+        <label>그룹명</label>
+        <input id="settings-group-name" class="input" style="max-width:180px" placeholder="그룹명">
+        <button class="btn" onclick="onSaveGroupName()">변경</button>
+      </div>
+      <div class="settings-row">
+        <label>테마</label>
+        <select id="settings-theme" class="input" style="max-width:130px" onchange="onChangeTheme(this.value)">
+          <option value="light">라이트</option>
+          <option value="dark">다크</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <label>연애 모드</label>
+        <select id="settings-mode" class="input" style="max-width:160px" onchange="onChangeMode(this.value)">
+          <option value="monogamy">단일연애</option>
+          <option value="open">개방관계</option>
+        </select>
+      </div>
+      <div class="settings-row settings-row-check">
+        <label>연애 허용 범위</label>
+        <div class="check-group">
+          <label class="check-label">
+            <input type="checkbox" id="settings-allow-romance"
+              onchange="onChangeAllowRomance(this.checked)" checked>
+            연애 자체 허용 (해제 시 고백·연인 전환 전부 차단)
+          </label>
+          <label class="check-label" id="label-same-gender">
+            <input type="checkbox" id="settings-same-gender"
+              onchange="onChangeSameGender(this.checked)" checked>
+            동성 연애 허용
+          </label>
+          <label class="check-label" id="label-opp-gender">
+            <input type="checkbox" id="settings-opp-gender"
+              onchange="onChangeOppGender(this.checked)" checked>
+            이성 연애 허용
+          </label>
+        </div>
       </div>
     </div>
 
-    <nav class="tabs" aria-label="탭">
-      <button class="tab" data-tab="dashboard" aria-selected="true" type="button">대시보드</button>
-      <button class="tab" data-tab="members" aria-selected="false" type="button">멤버</button>
-      <button class="tab" data-tab="manual" aria-selected="false" type="button">수동 스케줄</button>
-      <button class="tab" data-tab="relations" aria-selected="false" type="button">관계/이벤트</button>
-      <button class="tab" data-tab="album" aria-selected="false" type="button">앨범/콘서트</button>
-      <button class="tab" data-tab="settings" aria-selected="false" type="button">설정</button>
-      <button class="tab" data-tab="logs" aria-selected="false" type="button">로그</button>
-    </nav>
-  </header>
-
-  <main class="container">
-    <!-- DASHBOARD -->
-    <section id="tab-dashboard" class="grid two">
-      <div class="card">
-        <div class="row spread">
-          <h2>오늘 스케줄</h2>
-          <div class="row">
-            <button class="btn primary" id="nextDayBtn" type="button">➡️ 다음날</button>
-            <button class="btn" id="next7Btn" type="button">📅 7일</button>
-          </div>
-        </div>
-        <div class="hr"></div>
-        <div id="todaySchedule"></div>
-        <div class="sticky-actions">
-          <div class="row" style="justify-content:flex-end; gap:10px; padding:10px 0 0;">
-            <span class="muted small" id="scheduleHint"></span>
-          </div>
-        </div>
+    <div class="settings-section">
+      <h3>저장 / 불러오기</h3>
+      <p class="note" style="margin-bottom:8px">상단 탭 바 우측 아이콘으로도 빠르게 접근할 수 있습니다</p>
+      <div class="settings-actions">
+        <button class="btn" onclick="onSave()">💾 저장</button>
+        <button class="btn btn-ghost" onclick="onExport()">📤 전체 내보내기</button>
+        <button class="btn btn-ghost" onclick="onImport()">📥 불러오기</button>
+        <button class="btn btn-ghost" onclick="onExportLog()">📄 로그 TXT</button>
+        <button class="btn btn-ghost" onclick="onExportMembers()">👥 멤버 내보내기</button>
+        <button class="btn btn-ghost" onclick="onImportMembers()">👥 멤버 불러오기</button>
+        <button class="btn btn-danger" onclick="onReset()">🗑️ 초기화</button>
       </div>
+    </div>
 
-      <div class="card">
-        <h2>앨범/콘서트 진행</h2>
-        <div id="dashAlbum"></div>
-        <div class="hr"></div>
-        <h2>로그 미리보기</h2>
-        <div id="logMini" class="log-list"></div>
+    <div class="settings-section">
+      <h3>규칙 요약</h3>
+      <div class="rule-summary">
+        <div class="rule-item"><span class="rule-key">체력 ≤20 / 피로 ≥85 / 스트레스 ≥85</span><span>→ 강제 휴식</span></div>
+        <div class="rule-item"><span class="rule-key">2일 연속 미연습</span><span>→ 해당 능력치 -0.5/day</span></div>
+        <div class="rule-item"><span class="rule-key">호감도 ≥150</span><span>→ 연인 가능 (고백 필요)</span></div>
+        <div class="rule-item"><span class="rule-key">연인 호감도 &lt;50</span><span>→ 자동 이별</span></div>
+        <div class="rule-item"><span class="rule-key">컴백 기간</span><span>→ 21일 / 음악방송·팬싸 가능</span></div>
+        <div class="rule-item"><span class="rule-key">앨범 발매 비용</span><span>→ 500원</span></div>
+        <div class="rule-item"><span class="rule-key">콘서트 예약 비용</span><span>→ 1,000원 / 수익 2,000~3,000원</span></div>
+        <div class="rule-item"><span class="rule-key">이별 후 회피 기간</span><span>→ 3일 / 서먹함 → 전연인</span></div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <!-- MEMBERS -->
-    <section id="tab-members" hidden>
-      <div class="grid two">
-        <div class="card">
-          <h2>멤버 추가</h2>
-          <div class="row">
-            <div class="field"><label>이름</label><input id="mName" placeholder="이름" /></div>
-            <div class="field"><label>성별</label>
-              <select id="mGender">
-                <option value="">선택</option>
-                <option value="F">여</option>
-                <option value="M">남</option>
-              </select>
-            </div>
-            <div class="field"><label>MBTI</label>
-              <select id="mMbti">
-                <option value="">선택</option>
-                <option>INTJ</option><option>INTP</option><option>ENTJ</option><option>ENTP</option>
-                <option>INFJ</option><option>INFP</option><option>ENFJ</option><option>ENFP</option>
-                <option>ISTJ</option><option>ISFJ</option><option>ESTJ</option><option>ESFJ</option>
-                <option>ISTP</option><option>ISFP</option><option>ESTP</option><option>ESFP</option>
-              </select>
-            </div>
-            <div class="field"><label>키(cm)</label><input id="mHeight" type="number" min="120" max="220" placeholder="예: 165" /></div>
-            <div class="field"><label>몸무게(kg)</label><input id="mWeight" type="number" min="30" max="150" placeholder="예: 52" /></div>
-            <div class="field"><label>포지션 1개</label>
-              <select id="mPosition">
-                <option value="">선택</option>
-                <option value="main_vocal">메인보컬</option>
-                <option value="main_dance">메인댄서</option>
-                <option value="main_rap">메인래퍼</option>
-                <option value="vocal">보컬</option>
-                <option value="dance">댄서</option>
-                <option value="rap">래퍼</option>
-              </select>
-            </div>
-            <div class="field"><label>리더 지정</label>
-              <select id="mLeader">
-                <option value="no">아님</option>
-                <option value="yes">리더</option>
-              </select>
-            </div>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <button class="btn primary" id="addMemberBtn" type="button">➕ 추가</button>
-            <span class="muted small">최대 25명 · 메인 포지션은 각 1명 · 리더는 1명</span>
-          </div>
-        </div>
+  <!-- 로그 -->
+  <section id="tab-log" class="tab-panel">
+    <div class="section-header">
+      <h2>전체 로그</h2>
+      <button class="btn btn-ghost" onclick="onExportLog()">📄 TXT 저장</button>
+    </div>
+    <pre id="log-full"></pre>
+  </section>
 
-        <div class="card">
-          <h2>멤버 목록</h2>
-          <div id="membersList"></div>
-        </div>
-      </div>
-    </section>
+</main>
 
-    <!-- MANUAL SCHEDULE -->
-    <section id="tab-manual" hidden>
-      <div class="grid two">
-        <div class="card">
-          <h2>수동 스케줄</h2>
-          <div class="row">
-            <div class="field" style="min-width:220px">
-              <label>활동 선택</label>
-              <select id="manualActivity"></select>
-            </div>
-            <button class="btn" id="manualAssignBtn" type="button">✅ 선택 멤버 배정</button>
-            <button class="btn primary" id="manualRunDayBtn" type="button">➡️ 오늘 실행</button>
-          </div>
-          <div class="hr"></div>
-          <div id="manualMembers"></div>
-          <div class="hr"></div>
-          <div class="muted small">남는 멤버는 자동으로 휴식이 배정됩니다.</div>
-          <div class="sticky-actions">
-            <div class="row" style="justify-content:flex-end; gap:10px; padding:10px 0 0;">
-              <span class="muted small" id="manualHint"></span>
-            </div>
-          </div>
-        </div>
+<!-- ── 스크립트 (data.js 먼저!) ── -->
+<script src="js/data.js"></script>
+<script src="js/state.js"></script>
+<script src="js/members.js"></script>
+<script src="js/relations.js"></script>
+<script src="js/events.js"></script>
+<script src="js/graph.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/main.js"></script>
 
-        <div class="card">
-          <h2>실행 로그 미리보기</h2>
-          <div id="manualLogMini" class="log-list"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- RELATIONS -->
-    <section id="tab-relations" hidden>
-      <div class="grid two">
-        <div class="card">
-          <h2>관계도</h2>
-          <div class="row spread">
-            <div class="row">
-              <span class="badge gray">😶 무관심</span>
-              <span class="badge blue">🤝 친구</span>
-              <span class="badge green">💚 절친</span>
-              <span class="badge pink">💗 연애</span>
-              <span class="badge red">🔴 냉전/질투</span>
-            </div>
-            <div class="row">
-              <button class="btn" id="reDrawBtn" type="button">🔄 다시 그리기</button>
-            </div>
-          </div>
-          <div class="hr"></div>
-          <div class="canvas-wrap">
-            <canvas id="relationCanvas" width="1000" height="440"></canvas>
-          </div>
-          <div class="muted small" style="margin-top:8px">
-            선 굵기 = 호감도 크기 · 색상 = 관계 단계 · 빨강 점선 = 냉전 또는 질투
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>호감도 수치 조회</h2>
-          <div class="row">
-            <div class="field" style="min-width:220px">
-              <label>멤버 선택</label>
-              <select id="relSelect"></select>
-            </div>
-          </div>
-          <div class="hr"></div>
-          <div id="relScores"></div>
-
-          <div class="hr"></div>
-          <h2>수동 관계 이벤트</h2>
-          <div class="row">
-            <div class="field"><label>A</label><select id="evA"></select></div>
-            <div class="field"><label>B</label><select id="evB"></select></div>
-            <div class="field"><label>이벤트</label>
-              <select id="evType">
-                <option value="friend">친구 이벤트</option>
-                <option value="flirt">플러팅</option>
-                <option value="date">데이트</option>
-                <option value="confess">고백</option>
-                <option value="fight">싸움</option>
-                <option value="reconcile">화해</option>
-              </select>
-            </div>
-            <button class="btn primary" id="runManualEventBtn" type="button">⚡ 실행</button>
-          </div>
-          <div class="hr"></div>
-          <h2>관계 이벤트 로그</h2>
-          <div id="relationLogMini" class="log-list"></div>
-          <div class="muted small">수동 관계 이벤트는 “다음날”로 넘어가지 않습니다.</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ALBUM / CONCERT -->
-    <section id="tab-album" hidden>
-      <div class="grid two">
-        <div class="card">
-          <h2>앨범 준비</h2>
-          <div class="row">
-            <div class="field" style="min-width:220px">
-              <label>작사/작곡 담당</label>
-              <select id="albumComposer"></select>
-            </div>
-            <div class="field" style="min-width:220px">
-              <label>편곡 담당</label>
-              <select id="albumArranger"></select>
-            </div>
-          </div>
-          <div class="hr"></div>
-          <div id="albumProgress"></div>
-          <div class="row" style="margin-top:10px">
-            <button class="btn primary" id="releaseBtn" type="button" disabled>🎧 앨범 발매</button>
-            <span class="muted small">퍼센트는 7일~3주 수준으로 완화되어야 합니다.</span>
-          </div>
-
-          <div class="hr"></div>
-          <h2>콘서트</h2>
-          <div class="row">
-            <div class="field"><label>n일 뒤 콘서트</label><input id="concertInDays" type="number" min="1" max="60" value="15" /></div>
-            <button class="btn" id="planConcertBtn" type="button">📌 개최 결정</button>
-            <button class="btn danger" id="cancelConcertBtn" type="button">✖️ 취소</button>
-          </div>
-          <div class="hr"></div>
-          <div id="concertInfo"></div>
-        </div>
-
-        <div class="card">
-          <h2>앨범/콘서트 로그</h2>
-          <div id="albumLogMini" class="log-list"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- SETTINGS -->
-    <section id="tab-settings" hidden>
-      <div class="grid two">
-        <div class="card">
-          <h2>기본 설정</h2>
-          <div class="row">
-            <div class="field"><label>대시보드 로그 줄 수</label><input id="setDashLines" type="number" min="10" max="200" /></div>
-            <div class="field"><label>하루 자동 이벤트 최대</label><input id="setAutoMax" type="number" min="0" max="30" /></div>
-          </div>
-          <div class="hr"></div>
-
-          <h2>연애/관계 설정</h2>
-          <div class="row">
-            <button class="btn" id="toggleRomanceBtn" type="button">💖 연애</button>
-            <button class="btn" id="toggleMonoBtn" type="button">🔒 단일 연애</button>
-            <button class="btn" id="toggleBreakupBtn" type="button">💔 이별</button>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <div class="field"><label>연애 기준 호감도</label><input id="setLove" type="number" min="60" max="200" /></div>
-            <div class="field"><label>이별 기준 호감도</label><input id="setBreak" type="number" min="-200" max="200" /></div>
-          </div>
-          <div class="row" style="margin-top:10px">
-            <button class="btn" id="toggleOppBtn" type="button">♂♀ 이성 허용</button>
-            <button class="btn" id="toggleSameBtn" type="button">♀♀/♂♂ 동성 허용</button>
-          </div>
-          <div class="hr"></div>
-          <button class="btn primary" id="applySettingsBtn" type="button">✅ 적용</button>
-          <span class="muted small">설정 변경은 로그에 남기지 않고 토스트만 띄웁니다.</span>
-        </div>
-
-        <div class="card">
-          <h2>설명</h2>
-          <div class="muted small" style="white-space:pre-wrap; line-height:1.45">
-- 체력은 100에서 시작해 내려갑니다.
-- 피로/스트레스는 0에서 시작해 100까지 찹니다.
-- 썸은 단계가 아니라 “연애 기준을 넘었지만 고백 전 상태”의 별칭입니다.
-- 단일 연애 모드에서는 연애 중인 멤버가 남에게 플러팅/데이트를 하지 않습니다.
-- 수동 고백은 실패가 없지만 기준치 미달이면 “마음이 복잡하지만 아직은 아닌 것 같다”류 로그만 출력합니다.
-- 저장/불러오기/내보내기/로그TXT/테마 변경은 로그에 기록하지 않습니다.
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- LOGS -->
-    <section id="tab-logs" hidden>
-      <div class="grid two">
-        <div class="card">
-          <h2>전체 로그</h2>
-          <div id="logBox" class="log-list"></div>
-        </div>
-        <div class="card">
-          <h2>요약</h2>
-          <div id="logStats" class="muted small"></div>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-
-  <input id="fileInputAll" type="file" accept="application/json" hidden />
-  <input id="fileInputMembers" type="file" accept="application/json" hidden />
-
-  <script src="js/state.js" defer></script>
-  <script src="js/events.js" defer></script>
-  <script src="js/members.js" defer></script>
-  <script src="js/relations.js" defer></script>
-  <script src="js/graph.js" defer></script>
-  <script src="js/main.js" defer></script>
 </body>
 </html>

@@ -1,161 +1,164 @@
-(function(){
-  'use strict';
+// ── relations.js ── 관계 엔진, 호감도, 태그, 단계 ────────────────────────
+'use strict';
 
-  const { clamp } = window.StateStore;
+function relationId(idA, idB) {
+  return [idA, idB].sort().join(':');
+}
 
-  function stageFromAffection(aff, settings, dating){
-    if(dating) return '연애';
-    if(aff <= -120) return '혐오';
-    if(aff <= -41) return '불편';
-    if(aff <= 39) return '무관심';
-    if(aff <= 99) return '친구';
-    // above 100 is '절친' until dating happens
-    return '절친';
+function getRelation(relations, idA, idB) {
+  const rid = relationId(idA, idB);
+  return relations.find(r => r.id === rid) || null;
+}
+
+function ensureRelation(state, idA, idB) {
+  const rid = relationId(idA, idB);
+  let rel = state.relations.find(r => r.id === rid);
+  if (!rel) {
+    rel = {
+      id: rid,
+      affection: 0,
+      stage: 'indifference',
+      tags: [],
+      coldWarDaysLeft: 0,
+      avoidDaysLeft: 0,
+      confessionPending: false,
+      lastEventDay: 0
+    };
+    state.relations.push(rel);
+  }
+  return rel;
+}
+
+function clampAffection(v) { return Math.max(-200, Math.min(200, v)); }
+
+function changeAffection(rel, delta) {
+  rel.affection = clampAffection(rel.affection + delta);
+  updateStage(rel);
+}
+
+function updateStage(rel, settings) {
+  const L = (settings && settings.loverAffectionBase) || 150;
+  const a = rel.affection;
+  if (rel.tags && rel.tags.includes('lover')) { rel.stage = 'lover'; return; }
+  if (a <= -101) rel.stage = 'hatred';
+  else if (a <= -31) rel.stage = 'uncomfortable';
+  else if (a < 50) rel.stage = 'indifference';
+  else if (a < 100) rel.stage = 'friend';
+  else if (a < L) rel.stage = 'closeFriend';
+  else rel.stage = 'lover';
+}
+
+const STAGE_LABELS = {
+  hatred: '혐오', uncomfortable: '불편', indifference: '무관심',
+  friend: '친구', closeFriend: '절친', lover: '연인'
+};
+
+function getStageLabel(stage) { return STAGE_LABELS[stage] || stage; }
+
+function hasTag(rel, tag) { return rel.tags && rel.tags.includes(tag); }
+function addTag(rel, tag) { if (!rel.tags.includes(tag)) rel.tags.push(tag); }
+function removeTag(rel, tag) { rel.tags = rel.tags.filter(t => t !== tag); }
+
+function isLover(rel) { return hasTag(rel, 'lover'); }
+function isExLover(rel) { return hasTag(rel, 'exLover'); }
+function isAvoiding(rel) { return hasTag(rel, 'exLover') && rel.avoidDaysLeft > 0; }
+function isAwkward(rel) { return hasTag(rel, 'exLover') && !isAvoiding(rel) && rel.affection <= 80; }
+
+// 태그 UI 라벨 생성
+function getRelationLabel(rel, settings) {
+  const L = (settings && settings.loverAffectionBase) || 150;
+  const ex = hasTag(rel, 'exLover');
+  if (!ex && hasTag(rel, 'lover')) return '연인';
+  if (ex && rel.avoidDaysLeft > 0) return '전연인, 회피';
+  if (ex && rel.affection <= (settings && settings.exAwkwardClear || 80)) return '전연인, 서먹함';
+  if (ex && rel.affection >= (settings && settings.exReunionPossible || 140)) return '전연인, 썸';
+  if (ex) return '전연인';
+  return getStageLabel(rel.stage);
+}
+
+// 이벤트 타입 후보 결정
+function getAllowedTypes(rel, settings) {
+  const s = settings || {};
+  const exAvoid = s.exAvoidDays || 3;
+  const exAwkClear = s.exAwkwardClear || 80;
+  const exReunion = s.exReunionPossible || 140;
+  const exOkMin = s.exReunionOkMin || 100;
+
+  if (isAvoiding(rel)) return ['avoid'];
+
+  if (isExLover(rel)) {
+    if (rel.affection <= exAwkClear) return ['after_breakup','awkward'];
+    if (rel.affection >= exReunion) return ['friendship','flirting','date','reunion'];
+    if (rel.affection >= exOkMin) return ['friendship','flirting','date'];
+    return ['after_breakup','awkward'];
   }
 
-  function stageColor(stage){
-    if(stage === '연애') return 'pink';
-    if(stage === '절친') return 'green';
-    if(stage === '친구') return 'blue';
-    if(stage === '무관심' || stage === '불편' || stage === '혐오') return 'gray';
-    return 'gray';
+  if (hasTag(rel,'lover')) {
+    if (rel.coldWarDaysLeft > 0 || hasTag(rel,'coldWar')) return ['fight','reconcile'];
+    if (hasTag(rel,'jealous')) return ['jealousy','fight','reconcile'];
+    return ['date','flirting','fight'];
   }
 
-  function romancePossible(state, a, b){
-    if(!state.settings.romanceEnabled) return false;
-    if(!a || !b) return false;
-    if(!a.gender || !b.gender) return false;
-    if(a.gender === b.gender) return !!state.settings.allowSameSex;
-    return !!state.settings.allowOppositeSex;
-  }
+  // 냉전/질투
+  if (rel.coldWarDaysLeft > 0 || hasTag(rel,'coldWar')) return ['fight','reconcile'];
+  if (hasTag(rel,'jealous')) return ['jealousy','fight','reconcile'];
 
-  function isSomeTag(state, aId, bId, tag){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    if(tag === 'dating') return !!rel.dating;
-    if(tag === 'cold') return state.day <= (rel.coldUntilDay || 0);
-    return false;
-  }
+  const a = rel.affection;
+  if (a < -100) return ['fight','friendship'];
+  if (a < -30) return ['fight','friendship'];
+  if (a < 50) return ['friendship'];
+  if (a < 100) return ['friendship','flirting'];
+  return ['friendship','flirting','date'];
+}
 
-  function is썸(state, aId, bId){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    if(rel.dating) return false;
-    if(!state.settings.romanceEnabled) return false;
-    const a = state.members.find(m=>m.id===aId);
-    const b = state.members.find(m=>m.id===bId);
-    if(!romancePossible(state,a,b)) return false;
-    return rel.affection >= state.settings.loveThreshold;
-  }
+// 이별 처리
+function doBreakup(rel, settings) {
+  removeTag(rel, 'lover');
+  addTag(rel, 'exLover');
+  rel.avoidDaysLeft = (settings && settings.exAvoidDays) || 3;
+  rel.coldWarDaysLeft = 0;
+  removeTag(rel, 'coldWar');
+  removeTag(rel, 'jealous');
+  updateStage(rel, settings);
+}
 
-  function applyAffection(state, aId, bId, delta){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    rel.affection = clamp(rel.affection + delta, state.settings.affectionMin, state.settings.affectionMax);
-  }
+// 연인 전환
+function doBecomeLover(rel, settings) {
+  const L = (settings && settings.loverAffectionBase) || 150;
+  removeTag(rel, 'exLover');
+  addTag(rel, 'lover');
+  rel.avoidDaysLeft = 0;
+  if (rel.affection < L) rel.affection = L;
+  else rel.affection = Math.min(200, rel.affection + 10);
+  rel.stage = 'lover';
+}
 
-  function setDating(state, aId, bId, value){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    rel.dating = !!value;
-    if(!value){
-      rel.jealousyTargetId = null;
+// Day 진행 시 관계 업데이트 (회피 감소, 냉전 감소)
+function tickRelations(state) {
+  const settings = state.settings;
+  state.relations.forEach(rel => {
+    if (rel.avoidDaysLeft > 0) rel.avoidDaysLeft--;
+    if (rel.coldWarDaysLeft > 0) {
+      rel.coldWarDaysLeft--;
+      changeAffection(rel, -2);
+      if (rel.coldWarDaysLeft <= 0) removeTag(rel, 'coldWar');
     }
-  }
-
-  function setCold(state, aId, bId, days){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    rel.coldUntilDay = Math.max(rel.coldUntilDay||0, state.day + days);
-  }
-
-  function clearCold(state, aId, bId){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    rel.coldUntilDay = 0;
-  }
-
-  function anyDatingPairs(state){
-    const pairs = [];
-    for(const key of Object.keys(state.relations)){
-      const rel = state.relations[key];
-      if(rel.dating){
-        const [aId,bId] = key.split('|');
-        pairs.push([aId,bId]);
-      }
+    // 자동 이별 체크
+    if (hasTag(rel,'lover') && rel.affection < (settings.autoBreakupThreshold || 50)) {
+      doBreakup(rel, settings);
     }
-    return pairs;
-  }
+    updateStage(rel, settings);
+  });
+}
 
-  function monogamyBlocks(state, aId, bId){
-    if(!state.settings.monogamyMode) return false;
-    // If either is already dating someone else, block
-    for(const [x,y] of anyDatingPairs(state)){
-      if((x===aId && y!==bId) || (y===aId && x!==bId)) return true;
-      if((x===bId && y!==aId) || (y===bId && x!==aId)) return true;
-    }
-    return false;
-  }
-
-  function performConfessionAuto(state, aId, bId){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    if(rel.dating) return {done:false};
-    const a = state.members.find(m=>m.id===aId);
-    const b = state.members.find(m=>m.id===bId);
-    if(!romancePossible(state,a,b)) return {done:false};
-
-    if(monogamyBlocks(state, aId, bId)) return {done:false};
-
-    const love = state.settings.loveThreshold;
-    const cand = love - state.settings.confessionOffset;
-    if(rel.affection < cand) return {done:false};
-
-    // success always
-    if(rel.affection >= love){
-      rel.affection = clamp(rel.affection + 10, state.settings.affectionMin, state.settings.affectionMax);
-    }else{
-      // 135~149 -> set to 150 logic (generalized)
-      rel.affection = love;
-    }
-    rel.dating = true;
-    return {done:true, nowDating:true};
-  }
-
-  function performConfessionManual(state, aId, bId){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    const a = state.members.find(m=>m.id===aId);
-    const b = state.members.find(m=>m.id===bId);
-    if(!romancePossible(state,a,b)) return {done:true, nowDating:false, msg:'허용되지 않는 조합이라 연애로 진행되지 않습니다'};
-    if(monogamyBlocks(state,aId,bId)) return {done:true, nowDating:false, msg:'단일 연애 모드에서 이미 다른 연애가 진행 중입니다'};
-
-    const love = state.settings.loveThreshold;
-    if(rel.affection < love){
-      return {done:true, nowDating:false, msg:'마음이 복잡하지만 지금은 아닌 것 같다'};
-    }
-    // success always
-    if(rel.affection >= love){
-      rel.affection = clamp(rel.affection + 10, state.settings.affectionMin, state.settings.affectionMax);
-    }else{
-      rel.affection = love;
-    }
-    rel.dating = true;
-    return {done:true, nowDating:true};
-  }
-
-  function tryBreakup(state, aId, bId){
-    const rel = window.MemberSystem.getRelation(state,aId,bId);
-    if(!state.settings.breakupEnabled) return false;
-    if(!rel.dating) return false;
-    if(rel.affection > state.settings.breakupThreshold) return false;
-    return Math.random() < state.settings.breakupChance;
-  }
-
-  window.RelationSystem = {
-    stageFromAffection,
-    stageColor,
-    romancePossible,
-    is썸,
-    applyAffection,
-    setDating,
-    setCold,
-    clearCold,
-    isSomeTag,
-    performConfessionAuto,
-    performConfessionManual,
-    tryBreakup
-  };
-})();
+window.RelationsModule = {
+  relationId, getRelation, ensureRelation,
+  clampAffection, changeAffection, updateStage,
+  getStageLabel, getRelationLabel,
+  hasTag, addTag, removeTag,
+  isLover, isExLover, isAvoiding, isAwkward,
+  getAllowedTypes,
+  doBreakup, doBecomeLover,
+  tickRelations,
+  STAGE_LABELS
+};

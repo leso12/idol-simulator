@@ -1,1148 +1,1446 @@
-(function(){
-  'use strict';
+// ── main.js ── 게임 메인 루프 (fetch 없음, 인라인 데이터 사용) ────────────
+'use strict';
 
-  const S = window.StateStore;
-  const MS = window.MemberSystem;
-  const RS = window.RelationSystem;
-  const EE = window.EventEngine;
+// ═══════════════════════════════════════════════════════
+// 전역 앱 상태
+// ═══════════════════════════════════════════════════════
+const APP = {
+  state: null,
+  scheduleData: [],  // window.SCHEDULES_DATA 로 채움
+  templates: null    // window.RELATION_TEMPLATES 로 채움
+};
+window.APP = APP;
 
-  let state = null;
+// ═══════════════════════════════════════════════════════
+// 유틸
+// ═══════════════════════════════════════════════════════
+const rand    = (lo, hi) => lo + Math.random() * (hi - lo);
+const randInt = (lo, hi) => Math.floor(rand(lo, hi + 1));
+const clamp   = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const pick    = arr => arr[Math.floor(Math.random() * arr.length)];
 
-  const els = {};
-  function $(id){ return document.getElementById(id); }
+function formatMoney(n) {
+  return Math.floor(n).toLocaleString('ko-KR') + '원';
+}
+function statLabel(k) {
+  return { vocal:'보컬', dance:'댄스', rap:'랩', looks:'외모',
+           charm:'끼', songwriting:'작사', arrangement:'편곡' }[k] || k;
+}
+function josa(name, type) {
+  if (!name) return '';
+  return window.MembersModule ? window.MembersModule.josa(name, type) : '';
+}
+function setEl(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+function getEl(id) { return document.getElementById(id); }
 
-  function toast(msg){
-    const t = els.toast;
-    t.textContent = msg;
-    t.classList.add('show');
-    clearTimeout(toast._t);
-    toast._t = setTimeout(()=>t.classList.remove('show'), 1600);
+// ═══════════════════════════════════════════════════════
+// 초기화 (동기)
+// ═══════════════════════════════════════════════════════
+function init() {
+  // 인라인 데이터 연결 (CORS 없음)
+  APP.scheduleData = window.SCHEDULES_DATA || [];
+  APP.templates    = window.RELATION_TEMPLATES || null;
+  if (APP.templates) window.EventsModule.loadTemplates(APP.templates);
+
+  // 상태 로드
+  APP.state = window.StateModule.loadState();
+  // settings 기본값 병합
+  APP.state.settings = Object.assign(
+    {}, window.DEFAULT_CONFIG || {}, APP.state.settings || {}
+  );
+
+  // 테마 적용
+  applyTheme(APP.state.theme);
+
+  // UI 렌더링
+  renderAll();
+
+  // 탭 이벤트
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // 헤더 실시간 동기화
+  setInterval(syncHeader, 600);
+
+  // 최초 진입 그룹명 팝업
+  if (!APP.state.groupName || APP.state.groupName === '미설정') {
+    setTimeout(showGroupNamePopup, 300);
+  }
+}
+
+function syncHeader() {
+  if (!APP.state) return;
+  setEl('header-day-disp',   'Day ' + APP.state.day);
+  setEl('header-money-disp', formatMoney(APP.state.money));
+}
+
+// ═══════════════════════════════════════════════════════
+// 탭
+// ═══════════════════════════════════════════════════════
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tabId));
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + tabId));
+  if (tabId === 'relations') {
+    setTimeout(() => {
+      window.GraphModule.renderGraph(getEl('graph-canvas'), APP.state);
+      window.GraphModule.renderLegend(getEl('graph-legend'));
+    }, 80);
+  }
+}
+
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t || 'light');
+}
+
+// ═══════════════════════════════════════════════════════
+// 전체 렌더링
+// ═══════════════════════════════════════════════════════
+function renderAll() {
+  renderDashboard();
+  renderMembersTab();
+  renderScheduleTab();
+  renderRelationsTab();
+  renderAlbumTab();
+  renderSettingsTab();
+  renderLogTab();
+}
+
+// ═══════════════════════════════════════════════════════
+// 대시보드
+// ═══════════════════════════════════════════════════════
+function renderDashboard() {
+  const s = APP.state;
+  const gn = s.groupName === '미설정' ? '미설정' : s.groupName;
+  setEl('dash-group',  gn);
+  setEl('dash-day',    'Day ' + s.day);
+  setEl('dash-money',  formatMoney(s.money));
+  setEl('dash-pop',    s.kpi.popularity);
+  setEl('dash-fandom', s.kpi.fandom.toLocaleString());
+  setEl('dash-rep',    s.kpi.reputation);
+  setEl('dash-members',s.members.length + '명');
+
+  const albumEl = getEl('dash-album');
+  if (albumEl) {
+    if (s.concert && s.concert.isPlanned)
+      albumEl.textContent = `콘서트 D-${s.concert.daysLeft}`;
+    else if (s.album.isReleased && s.album.comebackDaysLeft > 0)
+      albumEl.textContent = `컴백 중 D-${s.album.comebackDaysLeft}`;
+    else if (s.album.isPreparing)
+      albumEl.textContent = '앨범 준비 중';
+    else
+      albumEl.textContent = '활동 없음';
   }
 
-  function setTopStatus(){
-    els.topStatus.textContent = `Day ${state.day} · 소지금 ${state.money}`;
-  }
-
-  function activityById(id){
-    return (window.AppData?.schedules?.activities || []).find(a => a.id === id) || null;
-  }
-
-  function availableActivitiesForUI(){
-    const list = window.AppData.schedules.activities.slice();
-    return list.filter(a => isActivityAvailable(a));
-  }
-
-  function isActivityAvailable(act){
-    const w = act.availableWhen || null;
-    if(!w) return true;
-    if(w.comebackActive && !state.album.comeback.active) return false;
-    if(w.concertPlanned && !state.concert.planned) return false;
-    if(w.concertNotStarted){
-      if(!state.concert.planned) return false;
-      if(state.day >= state.concert.startDay) return false;
-    }
-    return true;
-  }
-
-  function ensureRelations(){
-    for(let i=0;i<state.members.length;i++){
-      for(let j=i+1;j<state.members.length;j++){
-        MS.getRelation(state, state.members[i].id, state.members[j].id);
-      }
-    }
-  }
-
-  function migrateIfNeeded(){
-    state.settings = state.settings || window.AppData.config.defaults;
-    state.dayBlocks = state.dayBlocks || [];
-    state.log = state.log || [];
-    state.manual = state.manual || { assignments: {} };
-    state.album = state.album || { composerId:null, arrangerId:null, progress:{lyrics:0,vocal:0,dance:0}, released:false, comeback:{active:false,startDay:null,daysLeft:0,narrativeCounter:0} };
-    state.concert = state.concert || { planned:false, startDay:null };
-    state.relations = state.relations || {};
-    ensureRelations();
-  }
-
-  function save(){ S.saveState(state); }
-
-  function toggleTheme(){
-    state.theme = (state.theme === 'dark') ? 'light' : 'dark';
-    S.applyTheme(state.theme);
-    save();
-    toast(state.theme === 'dark' ? '다크 모드' : '라이트 모드');
-    renderAll();
-  }
-
-  // -------- Scheduling --------
-  function buildAutoAssignments(){
-    const assign = {};
-    const albumNeedLyrics = state.album.progress.lyrics < 100;
-    const albumNeedVocal = state.album.progress.vocal < 100;
-    const albumNeedDance = state.album.progress.dance < 100;
-
-    for(const m of state.members){
-      const c = m.condition;
-
-      if(c.health <= 25 || c.fatigue >= 80 || c.stress >= 85){
-        assign[m.id] = (Math.random()<0.6) ? 'rest_sleep' : 'rest_chill';
-        continue;
-      }
-
-      if(state.album.comeback.active){
-        const r = Math.random();
-        if(r < 0.20) { assign[m.id] = 'music_show'; continue; }
-        if(r < 0.34) { assign[m.id] = 'fansign'; continue; }
-        if(r < 0.42) { assign[m.id] = 'live_stream'; continue; }
-      }
-
-      if(state.concert.planned && state.day < state.concert.startDay){
-        const left = state.concert.startDay - state.day;
-        if(left <= 10 && Math.random() < (left<=4 ? 0.7 : 0.45)){
-          assign[m.id] = 'concert_practice';
-          continue;
-        }
-      }
-
-      if(albumNeedLyrics && state.album.composerId && m.id === state.album.composerId){
-        assign[m.id] = 'compose'; continue;
-      }
-      if(albumNeedLyrics && state.album.arrangerId && m.id === state.album.arrangerId && Math.random()<0.55){
-        assign[m.id] = 'arrange'; continue;
-      }
-
-      if(albumNeedVocal && (m.position==='main_vocal' || m.position==='vocal') && Math.random()<0.8){
-        assign[m.id] = 'vocal_practice'; continue;
-      }
-      if(albumNeedDance && (m.position==='main_dance' || m.position==='dance') && Math.random()<0.8){
-        assign[m.id] = 'dance_practice'; continue;
-      }
-      if(m.position==='main_rap' || m.position==='rap'){
-        assign[m.id] = (Math.random()<0.65) ? 'rap_practice' : 'dance_practice'; continue;
-      }
-
-      const weak = Object.entries(m.stats).sort((a,b)=>a[1]-b[1])[0][0];
-      if(weak==='vocal') assign[m.id]='vocal_practice';
-      else if(weak==='dance') assign[m.id]='dance_practice';
-      else if(weak==='rap') assign[m.id]='rap_practice';
-      else if(weak==='compose') assign[m.id]='compose';
-      else if(weak==='arrange') assign[m.id]='arrange';
-      else assign[m.id]='rest_walk';
-    }
-
-    return assign;
-  }
-
-  function normalizeManualAssignments(){
-    state.manual.assignments = state.manual.assignments || {};
-    const ids = new Set(state.members.map(m=>m.id));
-    for(const k of Object.keys(state.manual.assignments)){
-      if(!ids.has(k)) delete state.manual.assignments[k];
-    }
-  }
-
-  function decideAssignmentsForToday(){
-    normalizeManualAssignments();
-    const manualCount = Object.keys(state.manual.assignments).length;
-    if(manualCount>0){
-      const out = {};
-      for(const m of state.members){
-        out[m.id] = state.manual.assignments[m.id] || 'rest_sleep';
-      }
-      return { assignments: out, mode:'manual' };
-    }
-    return { assignments: buildAutoAssignments(), mode:'auto' };
-  }
-
-  function applyActivity(member, act){
-    const eff = act.effects || {};
-    member.condition.health = window.AppData.clamp(member.condition.health + (eff.health||0), 0, 100);
-    member.condition.fatigue = window.AppData.clamp(member.condition.fatigue + (eff.fatigue||0), 0, 100);
-    member.condition.stress = window.AppData.clamp(member.condition.stress + (eff.stress||0), 0, 100);
-
-    if(Number.isFinite(member.weight)){
-      member.weight = Math.round((member.weight + (eff.weight||0)) * 10) / 10;
-    }
-
-    let gain = null;
-    if(act.skill && act.skillGain){
-      const chance = act.skillGain.chance ?? 0.7;
-      const val = (Math.random() < chance) ? window.AppData.randInt(act.skillGain.min, act.skillGain.max) : 0;
-      member.stats[act.skill] = (member.stats[act.skill]||0) + val;
-      gain = { skill: act.skill, val };
-    }
-    return gain;
-  }
-
-  function updateAlbumProgress(assignments){
-    let lyricsDelta = 0;
-    let vocalDelta = 0;
-    let danceDelta = 0;
-
-    for(const m of state.members){
-      const actId = assignments[m.id];
-      if(actId==='compose'){
-        lyricsDelta += 8 + Math.min(8, (m.stats.compose||0)*0.2);
-      }
-      if(actId==='arrange'){
-        lyricsDelta += 4 + Math.min(6, (m.stats.arrange||0)*0.15);
-      }
-      if(actId==='vocal_practice'){
-        vocalDelta += 6 + Math.min(5, (m.stats.vocal||0)*0.1);
-      }
-      if(actId==='dance_practice'){
-        danceDelta += 6 + Math.min(5, (m.stats.dance||0)*0.1);
-      }
-      if(actId==='concert_practice'){
-        danceDelta += 3;
-      }
-      if(actId==='music_show' || actId==='fansign' || actId==='live_stream'){
-        vocalDelta += 1;
-        danceDelta += 1;
-      }
-    }
-
-    const n = Math.max(1, state.members.length);
-    lyricsDelta = lyricsDelta / Math.sqrt(n);
-    vocalDelta = vocalDelta / Math.sqrt(n);
-    danceDelta = danceDelta / Math.sqrt(n);
-
-    state.album.progress.lyrics = window.AppData.clamp(state.album.progress.lyrics + lyricsDelta, 0, 100);
-    state.album.progress.vocal = window.AppData.clamp(state.album.progress.vocal + vocalDelta, 0, 100);
-    state.album.progress.dance = window.AppData.clamp(state.album.progress.dance + danceDelta, 0, 100);
-  }
-
-  // -------- Log helpers --------
-  let currentBlock = null;
-
-  function pushAutoLog(icon, text){
-    currentBlock.auto.push({icon, text, kind:'auto'});
-  }
-  function pushActLog(icon, text){
-    currentBlock.activities.push({icon, text, kind:'activity'});
-  }
-
-  function emitSomeTransitionIfNeeded(aId, bId, beforeAff, afterAff, emit){
-    const rel = MS.getRelation(state, aId, bId);
-    if(rel.dating) return;
-    if(beforeAff >= state.settings.loveThreshold) return;
-    if(afterAff < state.settings.loveThreshold) return;
-
-    const A = state.members.find(m=>m.id===aId);
-    const B = state.members.find(m=>m.id===bId);
-    if(!A || !B) return;
-    if(!RS.romancePossible(state, A, B)) return;
-
-    const ev = EE.pickEvent('some_transition', state, {A:A.name, B:B.name});
-    emit(ev ? ev.icon : '💞', ev ? ev.text : `${A.name}와 ${B.name} 사이가 전과 다르게 미묘해졌습니다.`);
-  }
-
-  function applyAffectionWithSome(aId, bId, delta, emit){
-    const rel = MS.getRelation(state, aId, bId);
-    const before = rel.affection;
-    RS.applyAffection(state, aId, bId, delta);
-    const after = rel.affection;
-    if(delta > 0) emitSomeTransitionIfNeeded(aId, bId, before, after, emit);
-  }
-
-  function createDayBlock(dayStartMoney){
-    return {
-      day: state.day,
-      moneyStart: dayStartMoney,
-      moneyEnd: dayStartMoney,
-      auto: [],
-      activities: []
-    };
-  }
-
-  function flattenLogStrings(){
-    const out = [];
-    for(const block of state.dayBlocks){
-      out.push(`Day ${block.day} 종료 (소지금: ${block.moneyEnd})`);
-      if(block.auto && block.auto.length){
-        out.push('자동 이벤트');
-        for(const e of block.auto) out.push(`- ${e.text}`);
-      }
-      if(block.activities && block.activities.length){
-        out.push('활동');
-        for(const e of block.activities) out.push(`- ${e.text}`);
-      }
-      out.push(`Day ${block.day}`);
-      out.push('--------------------------------');
-    }
-    state.log = out;
-  }
-
-  // -------- Event mechanics --------
-  function maybeStartConcert(){
-    if(state.concert.planned && state.day >= state.concert.startDay){
-      const ctx = Object.assign({}, state, {_concertStart:true});
-      const ev = EE.pickEvent('concert_event', ctx, {});
-      pushAutoLog(ev ? ev.icon : '🎟️', ev ? ev.text : '콘서트가 열렸습니다. 무대가 꽉 찼습니다.');
-      state.concert.planned = false;
-      state.concert.startDay = null;
-    }
-  }
-
-  function maybeComebackNarrative(){
-    if(!state.album.comeback.active) return;
-    const start = state.album.comeback.startDay;
-    const daysSince = state.day - start;
-    if(daysSince < state.settings.comebackNarrativeStartAfterDays) return;
-
-    const allowNegative = Math.random() < 0.28;
-    const ctx = Object.assign({}, state, {_allowNegative: allowNegative});
-    const ev = EE.pickEvent('comeback_reaction', ctx, {});
-    if(ev) pushAutoLog(ev.icon, ev.text);
-  }
-
-  function maybeComebackEnd(){
-    if(!state.album.comeback.active) return;
-    state.album.comeback.daysLeft -= 1;
-    if(state.album.comeback.daysLeft <= 0){
-      const ctx = Object.assign({}, state, {_comebackSummary:true});
-      const ev = EE.pickEvent('comeback_summary', ctx, {});
-      pushAutoLog(ev ? ev.icon : '🏁', ev ? ev.text : '컴백 활동이 마무리됐습니다.');
-      state.album.comeback.active = false;
-      state.album.comeback.startDay = null;
-      state.album.comeback.daysLeft = 0;
-      state.album.comeback.narrativeCounter = 0;
-    }
-  }
-
-  function randomPair(){
-    if(state.members.length < 2) return null;
-    const a = state.members[Math.floor(Math.random()*state.members.length)];
-    let b = a;
-    let guard = 0;
-    while(b.id===a.id && guard++<12){
-      b = state.members[Math.floor(Math.random()*state.members.length)];
-    }
-    if(a.id===b.id) return null;
-    return [a,b];
-  }
-
-  function isMemberDatingSomeoneElse(memberId, partnerId){
-    for(const key of Object.keys(state.relations)){
-      const rel = state.relations[key];
-      if(!rel.dating) continue;
-      const [a,b] = key.split('|');
-      if(a===memberId && b!==partnerId) return true;
-      if(b===memberId && a!==partnerId) return true;
-    }
-    return false;
-  }
-
-  function clearJealousyFlags(){
-    for(const key of Object.keys(state.relations)){
-      state.relations[key].jealousyTargetId = null;
-    }
-  }
-
-  function runRelationshipAutoEvents(){
-    if(state.members.length < 2) return;
-
-    const max = state.settings.autoEventMaxPerDay;
-    if(max <= 0) return;
-
-    let created = 0;
-
-    // reconcile (cold only)
-    const coldKeys = Object.keys(state.relations).filter(k => state.day <= (state.relations[k].coldUntilDay||0));
-    for(const k of coldKeys){
-      if(created >= max) break;
-      if(Math.random() > state.settings.reconcileChance) continue;
-      const [aId,bId] = k.split('|');
-      const A = state.members.find(m=>m.id===aId);
-      const B = state.members.find(m=>m.id===bId);
-      if(!A || !B) continue;
-
-      const ctx = Object.assign({}, state, {_coldPair:true});
-      const ev = EE.pickEvent('pair_reconcile', ctx, {A:A.name, B:B.name});
-      RS.clearCold(state, aId, bId);
-      applyAffectionWithSome(aId, bId, 10, pushAutoLog);
-      pushAutoLog(ev ? ev.icon : '🤍', ev ? ev.text : `${A.name}와 ${B.name}가 화해했습니다.`);
-      created++;
-    }
-
-    // breakup
-    const datingKeys = Object.keys(state.relations).filter(k => state.relations[k].dating);
-    for(const k of datingKeys){
-      if(created >= max) break;
-      const [aId,bId] = k.split('|');
-      if(!RS.tryBreakup(state,aId,bId)) continue;
-      const A = state.members.find(m=>m.id===aId);
-      const B = state.members.find(m=>m.id===bId);
-      if(!A || !B) continue;
-
-      const ctx = Object.assign({}, state, {_datingPair:true});
-      const ev = EE.pickEvent('pair_breakup', ctx, {A:A.name, B:B.name});
-      RS.setDating(state, aId, bId, false);
-      applyAffectionWithSome(aId, bId, -10, pushAutoLog);
-      pushAutoLog(ev ? ev.icon : '💔', ev ? ev.text : `${A.name}와 ${B.name}가 이별했습니다.`);
-      created++;
-    }
-
-    // jealousy
-    if(state.settings.romanceEnabled && created < max){
-      const couples = Object.keys(state.relations).filter(k => state.relations[k].dating);
-      for(const k of couples){
-        if(created >= max) break;
-        if(Math.random() > 0.22) continue;
-        const [aId,bId] = k.split('|');
-        const A = state.members.find(m=>m.id===aId);
-        const B = state.members.find(m=>m.id===bId);
-        if(!A || !B) continue;
-        const others = state.members.filter(m=>m.id!==aId && m.id!==bId);
-        if(!others.length) continue;
-        const C = others[Math.floor(Math.random()*others.length)];
-
-        const targetOk = RS.romancePossible(state, A, C) || RS.romancePossible(state, B, C);
-        if(!targetOk) continue;
-
-        const relAC = MS.getRelation(state, aId, C.id);
-        const relBC = MS.getRelation(state, bId, C.id);
-        const closeEnough = (relAC.affection >= (state.settings.loveThreshold - state.settings.jealousyOffset)) ||
-                            (relBC.affection >= (state.settings.loveThreshold - state.settings.jealousyOffset));
-        if(!closeEnough) continue;
-
-        const ctx = Object.assign({}, state, {_datingPair:true});
-        const ev = EE.pickEvent('tri_jealous', ctx, {A:A.name, B:B.name, C:C.name});
-        MS.getRelation(state,aId,bId).jealousyTargetId = C.id;
-        applyAffectionWithSome(aId, bId, -6, pushAutoLog);
-        applyAffectionWithSome(aId, C.id, -2, pushAutoLog);
-        applyAffectionWithSome(bId, C.id, -2, pushAutoLog);
-        pushAutoLog(ev ? ev.icon : '🔴', ev ? ev.text : `${B.name}가 질투를 느꼈습니다. 상대는 ${C.name}였습니다.`);
-        created++;
-      }
-    }
-
-    // confession auto
-    if(state.settings.romanceEnabled && created < max){
-      for(let i=0;i<max*2 && created<max;i++){
-        if(Math.random() > state.settings.confessionChanceInAutoEvent) continue;
-        const pair = randomPair();
-        if(!pair) continue;
-        const A = pair[0], B = pair[1];
-
-        if(state.settings.monogamyMode){
-          if(isMemberDatingSomeoneElse(A.id, B.id) || isMemberDatingSomeoneElse(B.id, A.id)) continue;
-        }
-
-        const res = RS.performConfessionAuto(state, A.id, B.id);
-        if(!res.done) continue;
-
-        const ctx = Object.assign({}, state, {_datingPair:true});
-        const ev = EE.pickEvent('pair_confess', ctx, {A:A.name, B:B.name});
-        pushAutoLog(ev ? ev.icon : '💘', ev ? ev.text : `${A.name}가 ${B.name}에게 고백했습니다. 연애가 시작됐습니다.`);
-        created++;
-      }
-    }
-
-    // fight
-    for(let i=0;i<max*2 && created<max;i++){
-      if(Math.random() > state.settings.fightChance) continue;
-      const pair = randomPair();
-      if(!pair) continue;
-      const A = pair[0], B = pair[1];
-      const rel = MS.getRelation(state, A.id, B.id);
-      if(state.day <= (rel.coldUntilDay||0)) continue;
-
-      const stress = (A.condition.stress + B.condition.stress) / 2;
-      const score = (100 - (rel.affection+200)/4) + stress*0.5;
-      if(Math.random()*160 > score) continue;
-
-      const ctx = Object.assign({}, state, {});
-      const ev = EE.pickEvent('pair_fight', ctx, {A:A.name, B:B.name});
-      const days = window.AppData.randInt(state.settings.coldDaysMin, state.settings.coldDaysMax);
-      RS.setCold(state, A.id, B.id, days);
-      applyAffectionWithSome(A.id, B.id, -12, pushAutoLog);
-      pushAutoLog(ev ? ev.icon : '😡', ev ? ev.text : `${A.name}와 ${B.name}가 다퉜습니다.`);
-      created++;
-    }
-
-    // filler
-    for(let i=0;i<max*3 && created<max;i++){
-      const r = Math.random();
-      if(r < 0.12 && state.members.length >= 3){
-        const ev = EE.pickEvent('group_event', state, {});
-        if(ev){
-          pushAutoLog(ev.icon, ev.text);
-          created++;
-        }
-        continue;
-      }
-
-      const pair = randomPair();
-      if(!pair) continue;
-      const A = pair[0], B = pair[1];
-      const rel = MS.getRelation(state, A.id, B.id);
-      if(state.day <= (rel.coldUntilDay||0)) continue;
-
-      const st = RS.stageFromAffection(rel.affection, state.settings, rel.dating);
-      const monoBlocked = state.settings.monogamyMode && (isMemberDatingSomeoneElse(A.id,null) || isMemberDatingSomeoneElse(B.id,null));
-      const romanceOk = RS.romancePossible(state, A, B);
-
-      // dating
-      if(rel.dating){
-        const ctx = Object.assign({}, state, {_datingPair:true});
-        let ev = EE.pickEvent('pair_date', ctx, {A:A.name, B:B.name});
-        if(!ev) ev = EE.pickEvent('pair_friend', ctx, {A:A.name, B:B.name});
-        if(ev){
-          let text = ev.text;
-          if(Math.random() < 0.45){
-            const skin = EE.pickEvent('pair_skinship_pool', ctx, {A:A.name, B:B.name});
-            if(skin) text += ' ' + skin.text;
-          }
-          pushAutoLog('💗', text);
-          applyAffectionWithSome(A.id, B.id, +8, pushAutoLog);
-          created++;
-        }
-        continue;
-      }
-
-      if(!monoBlocked && romanceOk && (st==='친구' || st==='절친') && Math.random() < 0.22){
-        const ev = EE.pickEvent('pair_flirt', state, {A:A.name, B:B.name});
-        if(ev){
-          pushAutoLog(ev.icon, ev.text);
-          applyAffectionWithSome(A.id, B.id, +6, pushAutoLog);
-          created++;
-          continue;
-        }
-      }
-
-      if(!monoBlocked && romanceOk && (st==='친구' || st==='절친') && Math.random() < 0.15){
-        const ev = EE.pickEvent('pair_date', state, {A:A.name, B:B.name});
-        if(ev){
-          pushAutoLog(ev.icon, ev.text);
-          applyAffectionWithSome(A.id, B.id, +7, pushAutoLog);
-          created++;
-          continue;
-        }
-      }
-
-      const ev = EE.pickEvent('pair_friend', state, {A:A.name, B:B.name});
-      if(ev){
-        pushAutoLog(ev.icon, ev.text);
-        applyAffectionWithSome(A.id, B.id, +4, pushAutoLog);
-        created++;
-      }
-    }
-  }
-
-  function skillName(skill){
-    const map = { vocal:'보컬', dance:'댄스', rap:'랩', compose:'작사/작곡', arrange:'편곡' };
-    return map[skill] || skill;
-  }
-
-  function advanceOneDay(modeOverride){
-    if(state.members.length === 0){
-      toast('먼저 멤버를 추가해 주세요');
-      return;
-    }
-
-    clearJealousyFlags();
-
-    const dayStartMoney = state.money;
-    currentBlock = createDayBlock(dayStartMoney);
-
-    const {assignments, mode} = decideAssignmentsForToday();
-    const usedMode = modeOverride || mode;
-
-    const gainsByMember = {}; // memberId -> {skill,val}
-    let moneyDelta = 0;
-
-    for(const m of state.members){
-      const actId = assignments[m.id] || 'rest_sleep';
-      const act = activityById(actId) || activityById('rest_sleep');
-
-      const gain = applyActivity(m, act);
-      moneyDelta += (act.moneyDelta || 0);
-      if(gain) gainsByMember[m.id] = gain;
-
-      // weight threshold log
-      if(Number.isFinite(m.weight)){
-        if(m.meta.weightBase == null) m.meta.weightBase = m.weight;
-        const diff = Math.abs(m.weight - m.meta.weightBase);
-        if(diff >= state.settings.weightLogThresholdKg){
-          pushActLog('⚖️', `${m.name}의 몸무게가 ${m.meta.weightBase}kg에서 ${m.weight}kg로 변했습니다.`);
-          m.meta.weightBase = m.weight;
-        }
-      }
-
-      pushActLog(act.icon || '📌', `${m.name}가 ${act.name}을 진행했습니다.`);
-    }
-
-    state.money = dayStartMoney + moneyDelta;
-    currentBlock.moneyEnd = state.money;
-
-    updateAlbumProgress(assignments);
-
-    // practice results log (member: skill +0/+1/+2)
-    const gainLines = [];
-    for(const m of state.members){
-      const actId = assignments[m.id];
-      const act = activityById(actId);
-      if(!act || !act.skill) continue;
-      const g = gainsByMember[m.id];
-      if(!g) continue;
-      gainLines.push(`(${m.name}: ${skillName(g.skill)} +${g.val})`);
-    }
-    if(gainLines.length){
-      pushActLog('📈', `연습 결과 ${gainLines.join(' ')}`);
-    }
-
-    maybeStartConcert();
-    maybeComebackNarrative();
-    runRelationshipAutoEvents();
-    maybeComebackEnd();
-
-    state.dayBlocks.push(currentBlock);
-    flattenLogStrings();
-
-    state.manual.assignments = {};
-    state.day += 1;
-
-    save();
-    renderAll();
-    toast(usedMode === 'manual' ? '오늘 실행 완료 (수동)' : '다음날로 진행');
-  }
-
-  function run7Days(){
-    for(let i=0;i<7;i++) advanceOneDay();
-  }
-
-  // -------- Render --------
-  function switchTab(tab){
-    document.querySelectorAll('.tab').forEach(b=>{
-      b.setAttribute('aria-selected', b.dataset.tab===tab ? 'true':'false');
-    });
-    document.querySelectorAll('main section[id^="tab-"]').forEach(sec=>{
-      sec.hidden = (sec.id !== `tab-${tab}`);
-    });
-    if(tab==='relations') setTimeout(()=>Graph.drawGraph(state, els.relationCanvas), 50);
-  }
-
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, (c)=>({
-      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-    })[c]);
-  }
-
-  function logCard(icon, text, meta){
-    const m = meta ? `<div class="log-meta">${meta}</div>` : '';
-    return `<div class="log-card"><div class="log-icon">${icon}</div><div class="log-text">${escapeHtml(text)}${m}</div></div>`;
-  }
-
-  function progressRow(label, percent){
-    const p = Math.round(percent);
-    return `<div style="margin:8px 0">
-      <div class="row spread"><span>${label}</span><span class="muted small">${p}%</span></div>
-      <div class="progress"><div style="width:${p}%"></div></div>
-    </div>`;
-  }
-
-  function renderDashAlbum(){
-    const p = state.album.progress;
-    const cb = state.album.comeback;
-    const con = state.concert;
-    const parts = [];
-
-    parts.push(progressRow('작사/작곡', p.lyrics));
-    parts.push(progressRow('보컬', p.vocal));
-    parts.push(progressRow('안무', p.dance));
-
-    if(cb.active){
-      parts.push(`<div class="row spread" style="margin-top:8px">
-        <span class="badge pink">컴백 진행 중</span>
-        <span class="muted small">남은 기간 ${cb.daysLeft}일</span>
-      </div>`);
-    }else{
-      parts.push(`<div class="row spread" style="margin-top:8px">
-        <span class="badge gray">컴백 없음</span>
-        <span class="muted small">발매 후 21일 활동</span>
-      </div>`);
-    }
-
-    if(con.planned){
-      const left = con.startDay - state.day;
-      parts.push(`<div class="row spread" style="margin-top:8px">
-        <span class="badge blue">콘서트 예정</span>
-        <span class="muted small">D-${left}</span>
-      </div>`);
-    }
-
-    els.dashAlbum.innerHTML = parts.join('');
-  }
-
-  function renderMiniLogs(){
-    const linesLimit = state.settings.dashboardLogLines || 40;
-
-    const flattened = [];
-    for(const block of state.dayBlocks.slice().reverse()){
-      flattened.push({icon:'📅', text:`Day ${block.day} 종료 (소지금: ${block.moneyEnd})`, meta:`Day ${block.day}`});
-      for(const e of (block.auto||[])) flattened.push({icon:e.icon||'✨', text:e.text, meta:'자동'});
-      for(const e of (block.activities||[])) flattened.push({icon:e.icon||'📌', text:e.text, meta:'활동'});
-      flattened.push({icon:'📌', text:`Day ${block.day}`, meta:''});
-      if(flattened.length > linesLimit) break;
-    }
-    const slice = flattened.slice(0, linesLimit);
-
-    const cards = slice.map(it=>logCard(it.icon, it.text, it.meta));
-    els.logMini.innerHTML = cards.join('') || '<div class="muted">아직 로그가 없습니다.</div>';
-    els.manualLogMini.innerHTML = cards.slice(0,8).join('');
-    els.relationLogMini.innerHTML = cards.slice(0,8).join('');
-    els.albumLogMini.innerHTML = cards.slice(0,8).join('');
-  }
-
-  function renderDashboard(){
-    const {assignments, mode} = decideAssignmentsForToday();
-    const lines = [];
-    for(const m of state.members){
-      const act = activityById(assignments[m.id]) || activityById('rest_sleep');
-      lines.push(`<div class="row spread" style="padding:8px 0;border-bottom:1px solid var(--line)">
-        <div><strong>${m.name}</strong> <span class="muted small">(${MS.positionLabel(m.position) || '포지션 없음'})</span></div>
-        <div class="row">
-          <span class="badge">${act.icon} ${act.name}</span>
-          <span class="muted small">체력 ${m.condition.health} · 피로 ${m.condition.fatigue} · 스트레스 ${m.condition.stress}</span>
-        </div>
-      </div>`);
-    }
-    els.todaySchedule.innerHTML = lines.join('') || '<div class="muted">멤버가 없습니다.</div>';
-    els.scheduleHint.textContent = (mode==='manual') ? '수동 스케줄이 설정되어 있습니다.' : '자동 배정 결과입니다.';
-    renderDashAlbum();
-    renderMiniLogs();
-  }
-
-  function renderMembers(){
-    if(state.members.length===0){
-      els.membersList.innerHTML = `<div class="muted">멤버가 없습니다.</div>`;
-      return;
-    }
-    const rows = state.members.map(m=>{
-      return `<div class="card" style="padding:12px; margin-bottom:10px; background:var(--card2)">
-        <div class="row spread">
-          <div>
-            <strong>${m.name}</strong>
-            <span class="muted small">(${m.gender} · ${m.mbti} · ${MS.positionLabel(m.position)})</span>
-            ${m.isLeader ? `<span class="badge blue">리더</span>` : ''}
-          </div>
-          <div class="row">
-            <button class="btn danger" data-del="${m.id}" type="button">삭제</button>
-          </div>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <span class="badge">체력 ${m.condition.health}</span>
-          <span class="badge">피로 ${m.condition.fatigue}</span>
-          <span class="badge">스트레스 ${m.condition.stress}</span>
-          <span class="badge">몸무게 ${Number.isFinite(m.weight) ? m.weight+'kg' : '-'}</span>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <span class="badge">보컬 ${m.stats.vocal}</span>
-          <span class="badge">댄스 ${m.stats.dance}</span>
-          <span class="badge">랩 ${m.stats.rap}</span>
-          <span class="badge">작사/작곡 ${m.stats.compose}</span>
-          <span class="badge">편곡 ${m.stats.arrange}</span>
-        </div>
-      </div>`;
-    }).join('');
-    els.membersList.innerHTML = rows;
-
-    els.membersList.querySelectorAll('button[data-del]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const id = btn.getAttribute('data-del');
-        MS.removeMember(state, id);
-        save();
-        renderAll();
-        toast('삭제 완료');
+  const schEl = getEl('dash-schedule');
+  if (schEl) {
+    if (s.schedule.length === 0) {
+      schEl.textContent = '배정 없음';
+    } else {
+      const counts = {};
+      s.schedule.forEach(e => {
+        const act = APP.scheduleData.find(a => a.id === e.activityId);
+        const label = act ? act.label : e.activityId;
+        counts[label] = (counts[label] || 0) + 1;
       });
-    });
-  }
-
-  function renderManual(){
-    const acts = availableActivitiesForUI();
-    els.manualActivity.innerHTML = acts.map(a=>`<option value="${a.id}">${a.icon} ${a.name}</option>`).join('');
-    const list = state.members.map(m=>{
-      return `<label class="row" style="padding:8px 0;border-bottom:1px solid var(--line)">
-        <input type="checkbox" data-mid="${m.id}" />
-        <span><strong>${m.name}</strong> <span class="muted small">체력 ${m.condition.health} · 피로 ${m.condition.fatigue} · 스트레스 ${m.condition.stress}</span></span>
-      </label>`;
-    }).join('');
-    els.manualMembers.innerHTML = list || '<div class="muted">멤버가 없습니다.</div>';
-    els.manualHint.textContent = '체크한 멤버에게 선택한 활동을 배정합니다. 체크하지 않은 멤버는 자동으로 휴식합니다.';
-  }
-
-  function renderRelations(){
-    const opts = state.members.map(m=>`<option value="${m.id}">${m.name}</option>`).join('');
-    els.relSelect.innerHTML = `<option value="">선택</option>` + opts;
-    els.evA.innerHTML = `<option value="">선택</option>` + opts;
-    els.evB.innerHTML = `<option value="">선택</option>` + opts;
-    Graph.drawGraph(state, els.relationCanvas);
-  }
-
-  function renderRelationScores(){
-    const id = els.relSelect.value;
-    if(!id){
-      els.relScores.innerHTML = '<div class="muted">멤버를 선택해 주세요.</div>';
-      return;
-    }
-    const rows = state.members.filter(m=>m.id!==id).map(other=>{
-      const rel = MS.getRelation(state, id, other.id);
-      const st = RS.stageFromAffection(rel.affection, state.settings, rel.dating);
-      const cold = state.day <= (rel.coldUntilDay||0);
-      const some = RS.is썸(state, id, other.id);
-      return `<tr>
-        <td>${other.name}</td>
-        <td>${rel.affection}</td>
-        <td>${st}${some ? ' (썸)' : ''}</td>
-        <td>${rel.dating ? '연애' : '-'}</td>
-        <td>${cold ? '냉전' : '-'}</td>
-      </tr>`;
-    }).join('');
-    els.relScores.innerHTML = `<table class="table">
-      <thead><tr><th>상대</th><th>호감도</th><th>단계</th><th>연애</th><th>상태</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-  }
-
-  function renderAlbum(){
-    const opts = `<option value="">선택</option>` + state.members.map(m=>`<option value="${m.id}">${m.name}</option>`).join('');
-    els.albumComposer.innerHTML = opts;
-    els.albumArranger.innerHTML = opts;
-    els.albumComposer.value = state.album.composerId || '';
-    els.albumArranger.value = state.album.arrangerId || '';
-
-    els.albumProgress.innerHTML = [
-      progressRow('작사/작곡', state.album.progress.lyrics),
-      progressRow('보컬', state.album.progress.vocal),
-      progressRow('안무', state.album.progress.dance),
-    ].join('');
-
-    const canRelease = state.album.progress.lyrics>=100 && state.album.progress.vocal>=100 && state.album.progress.dance>=100;
-    els.releaseBtn.disabled = !canRelease;
-
-    if(state.concert.planned){
-      const left = state.concert.startDay - state.day;
-      els.concertInfo.innerHTML = `<div class="row spread">
-        <span class="badge blue">콘서트 예정</span>
-        <span class="muted small">D-${left} (Day ${state.concert.startDay} 시작)</span>
-      </div>`;
-    }else{
-      els.concertInfo.innerHTML = `<div class="muted">예정된 콘서트가 없습니다.</div>`;
+      schEl.textContent = Object.entries(counts).map(([l,c]) => `${l} ${c}명`).join(' / ');
     }
   }
+  renderLogMini('log-mini-dash');
+}
 
-  function renderSettings(){
-    els.setDashLines.value = state.settings.dashboardLogLines;
-    els.setAutoMax.value = state.settings.autoEventMaxPerDay;
-    els.setLove.value = state.settings.loveThreshold;
-    els.setBreak.value = state.settings.breakupThreshold;
+// ═══════════════════════════════════════════════════════
+// 멤버 탭
+// ═══════════════════════════════════════════════════════
+function renderMembersTab() {
+  const s = APP.state;
+  const gn = s.groupName === '미설정' ? '미설정' : s.groupName;
+  setEl('member-group', '그룹명 ' + gn);
+  setEl('member-count', '멤버 ' + s.members.length + '명');
 
-    syncSettingButtons();
+  const list = getEl('member-list');
+  if (!list) return;
+  if (s.members.length === 0) {
+    list.innerHTML = '<div class="empty-hint">멤버가 없습니다. 멤버를 추가해주세요.</div>';
+    return;
   }
 
-  function syncSettingButtons(){
-    els.toggleRomanceBtn.classList.toggle('primary', !!state.settings.romanceEnabled);
-    els.toggleMonoBtn.classList.toggle('primary', !!state.settings.monogamyMode);
-    els.toggleBreakupBtn.classList.toggle('primary', !!state.settings.breakupEnabled);
-    els.toggleOppBtn.classList.toggle('primary', !!state.settings.allowOppositeSex);
-    els.toggleSameBtn.classList.toggle('primary', !!state.settings.allowSameSex);
+  list.className = 'member-grid';
+  list.innerHTML = s.members.map(m => {
+    const c = m.condition || { stamina:100, fatigue:0, stress:0 };
+    const staminaCol = c.stamina <= 20 ? '#e74c3c' : c.stamina <= 50 ? '#f39c12' : '#27ae60';
+    return `
+    <div class="member-card">
+      <div class="member-card-header">
+        <span class="member-name">${m.name}</span>
+        <span class="member-badges">
+          ${m.isLeader ? '<span class="badge badge-leader">👑 리더</span>' : ''}
+          <span class="badge badge-pos">${m.position}</span>
+          <span class="badge badge-mbti">${m.mbti}</span>
+        </span>
+      </div>
+      <div class="member-info-row">${m.gender} · ${m.height}cm · ${m.weight.toFixed(2)}kg</div>
+      <div class="member-stats-grid">
+        ${Object.entries(m.stats).map(([k,v]) =>
+          `<div class="stat-item"><span class="stat-label">${statLabel(k)}</span><span class="stat-val">${v}</span></div>`
+        ).join('')}
+      </div>
+      <div class="member-condition">
+        ${condBar('체력', c.stamina, staminaCol)}
+        ${condBar('피로', c.fatigue, '#e67e22')}
+        ${condBar('스트레스', c.stress, '#9b59b6')}
+      </div>
+      <div class="member-actions">
+        <button class="btn-sm" onclick="openEditMember('${m.id}')">수정</button>
+        <button class="btn-sm btn-danger" onclick="deleteMember('${m.id}')">삭제</button>
+        ${!m.isLeader ? `<button class="btn-sm" onclick="setLeader('${m.id}')">리더 지정</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+function condBar(label, val, color) {
+  return `<div class="cond-bar-wrap">
+    <span>${label}</span>
+    <div class="cond-bar"><div class="cond-fill" style="width:${val}%;background:${color}"></div></div>
+    <span>${val}</span>
+  </div>`;
+}
 
-    els.toggleRomanceBtn.textContent = state.settings.romanceEnabled ? '💖 연애 ON' : '💖 연애 OFF';
-    els.toggleMonoBtn.textContent = state.settings.monogamyMode ? '🔒 단일 연애 ON' : '🔓 개방 관계 ON';
-    els.toggleBreakupBtn.textContent = state.settings.breakupEnabled ? '💔 이별 ON' : '💔 이별 OFF';
-    els.toggleOppBtn.textContent = state.settings.allowOppositeSex ? '♂♀ 이성 허용 ON' : '♂♀ 이성 허용 OFF';
-    els.toggleSameBtn.textContent = state.settings.allowSameSex ? '♀♀/♂♂ 동성 허용 ON' : '♀♀/♂♂ 동성 허용 OFF';
-  }
+// ═══════════════════════════════════════════════════════
+// 수동 스케줄 탭
+// ═══════════════════════════════════════════════════════
+function renderScheduleTab() {
+  const s = APP.state;
+  const el = getEl('schedule-list');
+  if (!el) return;
+  if (s.members.length === 0) { el.innerHTML = '<div class="empty-hint">멤버가 없습니다</div>'; return; }
 
-  function renderLogs(){
-    const logBox = els.logBox;
+  const available = APP.scheduleData.filter(a => {
+    if (a.requiresComeback && !(s.album.isReleased && s.album.comebackDaysLeft > 0)) return false;
+    return true;
+  });
+  const schMap = {};
+  s.schedule.forEach(e => { schMap[e.memberId] = e.activityId; });
 
-    // 필수 라인 (스크롤을 맨 위로)
-    logBox.textContent = state.log.join('\n');
-    logBox.scrollTop = 0;
-
-    const cards = [];
-    for(const block of state.dayBlocks.slice().reverse()){
-      cards.push(logCard('📅', `Day ${block.day} 종료 (소지금: ${block.moneyEnd})`, ''));
-      if(block.auto && block.auto.length){
-        cards.push(logCard('✨', '자동 이벤트', ''));
-        for(const e of block.auto) cards.push(logCard(e.icon||'✨', e.text, ''));
-      }
-      if(block.activities && block.activities.length){
-        cards.push(logCard('📌', '활동', ''));
-        for(const e of block.activities) cards.push(logCard(e.icon||'📌', e.text, ''));
-      }
-      cards.push(logCard('📌', `Day ${block.day}`, ''));
-    }
-    logBox.innerHTML = cards.join('') || '<div class="muted">아직 로그가 없습니다.</div>';
-    els.logStats.textContent = `총 Day 블록 ${state.dayBlocks.length}개 · 멤버 ${state.members.length}명`;
-  }
-
-  function renderAll(){
-    setTopStatus();
-    renderDashboard();
-    renderMembers();
-    renderManual();
-    renderRelations();
-    renderRelationScores();
-    renderAlbum();
-    renderSettings();
-    renderLogs();
-  }
-
-  // -------- UI Bind --------
-  function bindUI(){
-    document.querySelectorAll('.tab').forEach(btn=>{
-      btn.addEventListener('click', ()=> switchTab(btn.dataset.tab));
-    });
-
-    els.themeBtn.addEventListener('click', toggleTheme);
-    els.saveBtn.addEventListener('click', ()=>{ save(); toast('저장 완료'); });
-    els.exportBtn.addEventListener('click', ()=>{ S.exportState(state); toast('내보내기 완료'); });
-    els.exportMembersBtn.addEventListener('click', ()=>{ S.exportMembersOnly(state); toast('멤버 파일 저장'); });
-    els.logTxtBtn.addEventListener('click', ()=>{ S.downloadText('idol_sim_log.txt', S.buildTextLog(state)); toast('TXT 저장'); });
-
-    els.loadBtn.addEventListener('click', ()=>{ els.fileInputAll.click(); });
-
-    els.fileInputAll.addEventListener('change', async (e)=>{
-      const file = e.target.files[0];
-      if(!file) return;
-      const parsed = JSON.parse(await file.text());
-      state = parsed;
-      migrateIfNeeded();
-      S.applyTheme(state.theme);
-      save();
-      renderAll();
-      toast('불러오기 완료');
-      e.target.value = '';
-    });
-
-    els.fileInputMembers.addEventListener('change', async (e)=>{
-      const file = e.target.files[0];
-      if(!file) return;
-      const parsed = JSON.parse(await file.text());
-      if(parsed && Array.isArray(parsed.members)){
-        state.members = parsed.members;
-        ensureRelations();
-        save();
-        renderAll();
-        toast('멤버만 불러오기 완료');
-      }else{
-        toast('멤버 파일 형식이 아닙니다');
-      }
-      e.target.value = '';
-    });
-
-    els.resetBtn.addEventListener('click', ()=>{
-      if(!confirm('정말 전체 초기화할까요?')) return;
-      S.clearState();
-      state = S.defaultState(window.AppData.config.defaults);
-      S.applyTheme(state.theme);
-      save();
-      renderAll();
-      toast('초기화 완료');
-    });
-
-    els.nextDayBtn.addEventListener('click', ()=> advanceOneDay());
-    els.next7Btn.addEventListener('click', ()=> run7Days());
-
-    els.addMemberBtn.addEventListener('click', ()=>{
-      const m = S.defaultMember();
-      m.name = (els.mName.value||'').trim();
-      m.gender = els.mGender.value;
-      m.mbti = els.mMbti.value;
-      m.height = els.mHeight.value ? Number(els.mHeight.value) : null;
-      m.weight = els.mWeight.value ? Number(els.mWeight.value) : null;
-      m.position = els.mPosition.value;
-      m.isLeader = (els.mLeader.value === 'yes');
-
-      const res = MS.addMember(state, m);
-      if(!res.ok){ toast(res.msg || '추가 실패'); return; }
-
-      els.mName.value = '';
-      els.mGender.value = '';
-      els.mMbti.value = '';
-      els.mHeight.value = '';
-      els.mWeight.value = '';
-      els.mPosition.value = '';
-      els.mLeader.value = 'no';
-
-      save();
-      renderAll();
-      toast('추가 완료');
-    });
-
-    els.manualAssignBtn.addEventListener('click', ()=>{
-      const actId = els.manualActivity.value;
-      const checked = Array.from(els.manualMembers.querySelectorAll('input[type="checkbox"][data-mid]:checked'))
-        .map(x=>x.getAttribute('data-mid'));
-      if(!checked.length){ toast('체크된 멤버가 없습니다'); return; }
-      for(const id of checked) state.manual.assignments[id] = actId;
-      els.manualMembers.querySelectorAll('input[type="checkbox"]').forEach(x=>x.checked=false);
-      save();
-      renderDashboard();
-      toast('배정 완료');
-    });
-
-    els.manualRunDayBtn.addEventListener('click', ()=> advanceOneDay('manual'));
-
-    els.relSelect.addEventListener('change', renderRelationScores);
-    els.reDrawBtn.addEventListener('click', ()=> Graph.drawGraph(state, els.relationCanvas));
-
-    els.runManualEventBtn.addEventListener('click', ()=>{
-      const aId = els.evA.value, bId = els.evB.value;
-      if(!aId || !bId || aId===bId){ toast('A/B를 올바르게 선택해 주세요'); return; }
-      const A = state.members.find(m=>m.id===aId);
-      const B = state.members.find(m=>m.id===bId);
-      if(!A || !B){ toast('멤버를 찾을 수 없습니다'); return; }
-
-      const rel = MS.getRelation(state, aId, bId);
-      const type = els.evType.value;
-
-      const block = {day: state.day, moneyStart: state.money, moneyEnd: state.money, auto:[], activities:[]};
-      const emit = (icon,text)=>block.auto.push({icon,text});
-
-      if(type==='friend'){
-        const ev = EE.pickEvent('pair_friend', state, {A:A.name, B:B.name});
-        if(ev){ applyAffectionWithSome(aId, bId, +5, emit); emit(ev.icon, ev.text); }
-      }
-      if(type==='flirt'){
-        if(state.settings.monogamyMode && (isMemberDatingSomeoneElse(aId,bId) || isMemberDatingSomeoneElse(bId,aId))){ toast('단일 연애 모드에서 연애 중인 멤버는 플러팅 불가'); return; }
-        const ev = EE.pickEvent('pair_flirt', state, {A:A.name, B:B.name});
-        if(ev){ applyAffectionWithSome(aId, bId, +8, emit); emit(ev.icon, ev.text); }
-      }
-      if(type==='date'){
-        if(state.settings.monogamyMode && (isMemberDatingSomeoneElse(aId,bId) || isMemberDatingSomeoneElse(bId,aId))){ toast('단일 연애 모드에서 연애 중인 멤버는 데이트 불가'); return; }
-        const ev = EE.pickEvent('pair_date', state, {A:A.name, B:B.name});
-        if(ev){
-          let text = ev.text;
-          if(rel.dating && Math.random()<0.55){
-            const sk = EE.pickEvent('pair_skinship_pool', Object.assign({}, state, {_datingPair:true}), {A:A.name,B:B.name});
-            if(sk) text += ' ' + sk.text;
+  el.innerHTML = s.members.map(m => `
+    <div class="schedule-row">
+      <span class="sch-name">${m.name}${m.isLeader?' 👑':''}</span>
+      <select class="sch-select" onchange="onScheduleSelect('${m.id}',this.value)">
+        <option value="">-- 선택 없음 (자동 휴식) --</option>
+        ${available.map(a => {
+          const pop = APP.state.kpi.popularity;
+          const popMult = 1 + Math.min(pop, 200) / 200;
+          let suffix = '';
+          if (a.cost > 0 && a.earns) {
+            suffix = ` | -${formatMoney(a.cost)}/인 +${formatMoney(Math.floor(a.earns.min*popMult))}~${formatMoney(Math.floor(a.earns.max*popMult))}`;
+          } else if (a.cost > 0) {
+            suffix = ` | -${formatMoney(a.cost)}/인`;
+          } else if (a.earns) {
+            const eMin = formatMoney(Math.floor(a.earns.min * popMult));
+            const eMax = formatMoney(Math.floor(a.earns.max * popMult));
+            suffix = a.isGroupOnly
+              ? ` | 단체 +${eMin}~${eMax}`
+              : ` | +${eMin}~${eMax}/인`;
           }
-          applyAffectionWithSome(aId, bId, +10, emit);
-          emit('💗', text);
-        }
-      }
-      if(type==='confess'){
-        const res = RS.performConfessionManual(state, aId, bId);
-        if(res.nowDating){
-          const ev = EE.pickEvent('pair_confess', state, {A:A.name, B:B.name});
-          emit(ev ? ev.icon : '💘', ev ? ev.text : `${A.name}가 ${B.name}에게 고백했습니다.`);
-        }else{
-          applyAffectionWithSome(aId, bId, +2, emit);
-          emit('💭', `${A.name}가 ${B.name}에게 고백했습니다. ${res.msg || '마음이 복잡하지만 지금은 아닌 것 같다'}.`);
-        }
-      }
-      if(type==='fight'){
-        const ev = EE.pickEvent('pair_fight', state, {A:A.name, B:B.name});
-        const days = window.AppData.randInt(state.settings.coldDaysMin, state.settings.coldDaysMax);
-        RS.setCold(state,aId,bId,days);
-        applyAffectionWithSome(aId, bId, -14, emit);
-        emit(ev ? ev.icon : '😡', ev ? ev.text : `${A.name}와 ${B.name}가 다퉜습니다.`);
-      }
-      if(type==='reconcile'){
-        if(!(state.day <= (rel.coldUntilDay||0))){ toast('냉전 상태가 아닙니다'); return; }
-        const ev = EE.pickEvent('pair_reconcile', Object.assign({}, state, {_coldPair:true}), {A:A.name, B:B.name});
-        RS.clearCold(state,aId,bId);
-        applyAffectionWithSome(aId, bId, +10, emit);
-        emit(ev ? ev.icon : '🤍', ev ? ev.text : `${A.name}와 ${B.name}가 화해했습니다.`);
-      }
+          return `<option value="${a.id}"${schMap[m.id]===a.id?' selected':''}>${a.label}${suffix}</option>`;
+        }).join('')}
+      </select>
+    </div>`).join('');
 
-      if(block.auto.length){
-        state.dayBlocks.push(block);
-        flattenLogStrings();
-        save();
-        renderAll();
-        toast('관계 이벤트 실행');
-      }else{
-        toast('이벤트를 생성할 수 없습니다');
+  renderLogMini('log-mini-schedule');
+}
+
+window.onScheduleSelect = function(memberId, activityId) {
+  const s = APP.state;
+  const act = APP.scheduleData.find(a => a.id === activityId);
+  if (act && act.isGroupOnly && activityId) {
+    s.schedule = s.members.map(m => ({ memberId: m.id, activityId, isManual: true }));
+    showToast(act.label + ': 전체 멤버가 배정되었습니다');
+  } else {
+    s.schedule = s.schedule.filter(e => e.memberId !== memberId);
+    if (activityId) s.schedule.push({ memberId, activityId, isManual: true });
+  }
+  window.StateModule.saveState(s);
+  renderScheduleTab();
+  renderDashboard();
+};
+
+window.clearSchedule = function() {
+  APP.state.schedule = [];
+  window.StateModule.saveState(APP.state);
+  renderScheduleTab(); renderDashboard();
+  showToast('스케줄을 초기화했습니다');
+};
+window.applySchedule = function() {
+  window.StateModule.saveState(APP.state);
+  renderDashboard();
+  showToast('스케줄이 확정되었습니다');
+};
+
+window.onSmartAssignManual = function() {
+  const s = APP.state;
+  if (s.members.length === 0) { showToast('멤버가 없습니다'); return; }
+  smartAutoAssign(s, true);
+  window.StateModule.saveState(s);
+  renderScheduleTab();
+  renderDashboard();
+  showToast('🎲 소지금·컨디션 기반으로 랜덤 배정했습니다');
+};
+
+// ═══════════════════════════════════════════════════════
+// Day 실행 엔진
+// ═══════════════════════════════════════════════════════
+// 인지도 반영 수익 계산
+// popularity 0→보정없음, 100→+50%, 200→+100%
+function calcEarn(act, popularity) {
+  const base = randInt(act.earns.min, act.earns.max);
+  const popBonus = 1 + Math.min(popularity, 200) / 200; // 최대 2배
+  return Math.floor(base * popBonus);
+}
+
+// 활동별 비용/수익 로그 문자열 생성
+function moneyLog(delta, label) {
+  return delta >= 0
+    ? `+${formatMoney(delta)} (${label})`
+    : `-${formatMoney(Math.abs(delta))} (${label})`;
+}
+
+function executeDay(s) {
+  const logs = [];
+  const kpiDelta = { popularity:0, fandom:0, reputation:0 };
+  const RM = window.RelationsModule;
+
+  // 스케줄 없으면 자동 배정
+  if (s.schedule.length === 0) autoAssign(s);
+
+  // 강제 휴식
+  s.members.forEach(m => {
+    const c = m.condition || { stamina:100, fatigue:0, stress:0 };
+    if (!m.condition) m.condition = c;
+    if (c.stamina <= 20 || c.fatigue >= 85 || c.stress >= 85) {
+      const idx = s.schedule.findIndex(e => e.memberId === m.id);
+      const rid = s.settings.autoRestId || 'rest';
+      if (idx >= 0) s.schedule[idx].activityId = rid;
+      else s.schedule.push({ memberId: m.id, activityId: rid, isManual: false });
+      logs.push(`⚠️ ${m.name}의 컨디션이 좋지 않아 강제 휴식으로 전환됩니다`);
+    }
+  });
+
+  // 남는 멤버 자동 휴식
+  s.members.forEach(m => {
+    if (!m || !m.id) return;
+    if (!s.schedule.find(e => e.memberId === m.id))
+      s.schedule.push({ memberId: m.id, activityId: s.settings.autoRestId || 'rest', isManual: false });
+  });
+
+  // 비용 선처리
+  checkAndFixBudget(s);
+
+  // 활동별 그룹핑 & 실행
+  const actGroups = {};
+  s.schedule.forEach(e => {
+    (actGroups[e.activityId] = actGroups[e.activityId] || []).push(e.memberId);
+  });
+
+  Object.entries(actGroups).forEach(([actId, memberIds]) => {
+    const act = APP.scheduleData.find(a => a.id === actId)
+              || { id:actId, label:actId, type:'rest', cost:0, earns:null, isGroupOnly:false };
+    const members = memberIds.map(id => s.members.find(m => m.id === id))
+      .filter(m => m && m.condition && m.stats);
+    if (!members.length) return;
+
+    // 상태 변화
+    members.forEach(m => applyCondition(m, act));
+
+    // 로그 & 수익/비용
+    const actLogs = buildActivityLogs(s, act, members);
+    logs.push(...actLogs);
+
+    if (act.isGroupOnly) {
+      if (act.earns) {
+        const earn = calcEarn(act, s.kpi.popularity);
+        s.money += earn;
+        logs.push(`💵 ${act.label} 수익: +${formatMoney(earn)} (인지도 ${s.kpi.popularity} 반영)`);
+        kpiDelta.popularity += randInt(3, 15);
+        kpiDelta.fandom     += randInt(100, 300);
       }
+    } else {
+      if (act.earns) {
+        let totalEarn = 0;
+        members.forEach(() => { totalEarn += calcEarn(act, s.kpi.popularity); });
+        s.money += totalEarn;
+        logs.push(`💵 ${act.label} 수익: +${formatMoney(totalEarn)} ${members.length}명 × 인지도 ${s.kpi.popularity} 반영`);
+        kpiDelta.popularity += randInt(2, 5) * members.length;
+      }
+      if (act.cost > 0) {
+        const totalCost = act.cost * members.length;
+        s.money -= totalCost;
+        logs.push(`💸 ${act.label} 비용: -${formatMoney(totalCost)} (1인 ${formatMoney(act.cost)} × ${members.length}명)`);
+      }
+    }
+  });
+
+  // 연습 능력치 상승
+  const practiceMap = {};
+  s.schedule.forEach(e => {
+    const act = APP.scheduleData.find(a => a.id === e.activityId);
+    if (!act || act.type !== 'practice' || !act.subType) return;
+    (practiceMap[act.subType] = practiceMap[act.subType] || [])
+      .push(s.members.find(m => m.id === e.memberId));
+  });
+  Object.entries(practiceMap).forEach(([subType, members]) => {
+    const validMembers = members.filter(Boolean);
+    const rises = [];
+    validMembers.forEach(m => {
+      const r = Math.random();
+      const delta = r < 0.2 ? 0 : r < 0.5 ? 0.5 : r < 0.85 ? 1 : 2;
+      if (delta > 0) m.stats[subType] = Math.round((m.stats[subType] + delta) * 10) / 10;
+      rises.push(`  ${m.name} ${statLabel(subType)} +${delta}`);
+      m.lastPractice[subType] = s.day;
     });
+    logs.push('📊 연습 결과\n' + rises.join('\n'));
+    updateAlbumProgress(s, subType, validMembers);
+  });
 
-    els.albumComposer.addEventListener('change', ()=>{ state.album.composerId = els.albumComposer.value || null; save(); renderAll(); });
-    els.albumArranger.addEventListener('change', ()=>{ state.album.arrangerId = els.albumArranger.value || null; save(); renderAll(); });
+  // 2일 미연습 하락
+  logs.push(...applyPracticeDecay(s));
 
-    els.releaseBtn.addEventListener('click', ()=>{
-      if(!(state.album.progress.lyrics>=100 && state.album.progress.vocal>=100 && state.album.progress.dance>=100)) return;
-      state.album.released = true;
-      state.album.comeback.active = true;
-      state.album.comeback.startDay = state.day;
-      state.album.comeback.daysLeft = state.settings.comebackDays;
-      state.album.comeback.narrativeCounter = 0;
+  // 체중 소폭 변동
+  applyWeightChange(s, logs);
 
-      state.dayBlocks.push({day: state.day, moneyStart: state.money, moneyEnd: state.money, auto:[{icon:'🎧', text:'앨범이 발매됐습니다. 21일 컴백 활동이 시작됩니다.'}], activities:[]});
-      flattenLogStrings();
-      save();
-      renderAll();
-      toast('발매 완료');
-    });
+  // 콘서트 카운트
+  if (s.concert && s.concert.isPlanned && s.concert.daysLeft > 0) {
+    s.concert.prepPercent = Math.min(100, s.concert.prepPercent + 100 / s.concert.daysLeft);
+    s.concert.daysLeft--;
+    if (s.concert.daysLeft === 0) logs.push(...executeConcertNow(s, kpiDelta));
+  }
 
-    els.planConcertBtn.addEventListener('click', ()=>{
-      const n = Number(els.concertInDays.value || 15);
-      if(!Number.isFinite(n) || n<1){ toast('n일 값을 확인해 주세요'); return; }
-      state.concert.planned = true;
-      state.concert.startDay = state.day + n;
-      state.dayBlocks.push({day: state.day, moneyStart: state.money, moneyEnd: state.money, auto:[{icon:'🎟️', text:`${n}일 뒤 콘서트를 개최하기로 결정했습니다.`}], activities:[]});
-      flattenLogStrings();
-      save();
-      renderAll();
-      toast('콘서트 예정');
-    });
+  // 컴백 카운트
+  if (s.album.isReleased && s.album.comebackDaysLeft > 0) {
+    s.album.comebackDaysLeft--;
+    if (s.album.comebackDaysLeft === 0) s.album.isReleased = false;
+  }
 
-    els.cancelConcertBtn.addEventListener('click', ()=>{
-      state.concert.planned = false;
-      state.concert.startDay = null;
-      save();
-      renderAll();
-      toast('콘서트 취소');
-    });
+  // KPI 인기도 자연 감소
+  if (!(s.album.isReleased && s.album.comebackDaysLeft > 0))
+    kpiDelta.popularity -= s.settings.kpiPopDecayPerDay || 1;
 
-    els.toggleRomanceBtn.addEventListener('click', ()=>{ state.settings.romanceEnabled = !state.settings.romanceEnabled; syncSettingButtons(); save(); toast('연애 설정 변경'); });
-    els.toggleMonoBtn.addEventListener('click', ()=>{ state.settings.monogamyMode = !state.settings.monogamyMode; syncSettingButtons(); save(); toast('관계 모드 변경'); });
-    els.toggleBreakupBtn.addEventListener('click', ()=>{ state.settings.breakupEnabled = !state.settings.breakupEnabled; syncSettingButtons(); save(); toast('이별 설정 변경'); });
-    els.toggleOppBtn.addEventListener('click', ()=>{ state.settings.allowOppositeSex = !state.settings.allowOppositeSex; syncSettingButtons(); save(); toast('이성 허용 변경'); });
-    els.toggleSameBtn.addEventListener('click', ()=>{ state.settings.allowSameSex = !state.settings.allowSameSex; syncSettingButtons(); save(); toast('동성 허용 변경'); });
+  s.kpi.popularity = Math.max(0, s.kpi.popularity + kpiDelta.popularity);
+  s.kpi.fandom     = Math.max(0, s.kpi.fandom     + kpiDelta.fandom);
+  s.kpi.reputation = Math.max(0, s.kpi.reputation  + kpiDelta.reputation);
 
-    els.applySettingsBtn.addEventListener('click', ()=>{
-      state.settings.dashboardLogLines = Number(els.setDashLines.value || state.settings.dashboardLogLines);
-      state.settings.autoEventMaxPerDay = Number(els.setAutoMax.value || state.settings.autoEventMaxPerDay);
-      state.settings.loveThreshold = Number(els.setLove.value || state.settings.loveThreshold);
-      state.settings.breakupThreshold = Number(els.setBreak.value || state.settings.breakupThreshold);
-      save();
-      renderAll();
-      toast('적용 완료');
+  // 자동 이별 체크
+  RM.tickRelations(s);
+
+  // 자동 관계 이벤트
+  if (APP.templates) {
+    const evs = window.EventsModule.generateAutoEvents(s, s.settings.autoEventMax || 3);
+    evs.forEach(ev => {
+      const firstDot = ev.first.endsWith('.') ? ev.first : ev.first + '.';
+      const secondPart = ev.second ? ' ' + (ev.second.endsWith('.') ? ev.second : ev.second + '.') : '';
+      const autoEvLine=`${ev.icon} ${firstDot}${secondPart}`;
+      logs.push(autoEvLine);
+      pushRelLog(`[Day ${s.day}] ${autoEvLine}`);
     });
   }
 
-  async function init(){
-    [
-      'toast','topStatus','themeBtn','saveBtn','loadBtn','exportBtn','exportMembersBtn','logTxtBtn','resetBtn',
-      'nextDayBtn','next7Btn','todaySchedule','scheduleHint','dashAlbum','logMini',
-      'mName','mGender','mMbti','mHeight','mWeight','mPosition','mLeader','addMemberBtn','membersList',
-      'manualActivity','manualAssignBtn','manualRunDayBtn','manualMembers','manualHint','manualLogMini',
-      'relationCanvas','reDrawBtn','relSelect','relScores','evA','evB','evType','runManualEventBtn','relationLogMini',
-      'albumComposer','albumArranger','albumProgress','releaseBtn','concertInDays','planConcertBtn','cancelConcertBtn','concertInfo','albumLogMini',
-      'setDashLines','setAutoMax','toggleRomanceBtn','toggleMonoBtn','toggleBreakupBtn','setLove','setBreak','toggleOppBtn','toggleSameBtn','applySettingsBtn',
-      'logBox','logStats','fileInputAll','fileInputMembers'
-    ].forEach(id=>els[id]=$(id));
+  return { logs, kpiDelta };
+}
 
-    await S.loadData();
-    await EE.loadEventTemplates();
+function applyCondition(m, act) {
+  if (!m || !m.condition) return;
+  // condition 필드 보정 (혹시라도 undefined인 경우 방어)
+  if (typeof m.condition.stamina !== 'number') m.condition.stamina = 100;
+  if (typeof m.condition.fatigue !== 'number') m.condition.fatigue = 0;
+  if (typeof m.condition.stress  !== 'number') m.condition.stress  = 0;
+  const c = m.condition;
+  let st=0, fa=0, sr=0;
+  switch(act.type) {
+    case 'rest':     st=randInt(15,25); fa=-randInt(20,30); sr=-randInt(10,20); break;
+    case 'practice': st=-randInt(5,10); fa=randInt(10,15);  sr=randInt(-5,5);   break;
+    case 'special':  st=-randInt(10,20);fa=randInt(15,25);  sr=randInt(-10,10); break;
+    case 'schedule':
+      if (act.id==='travel') { st=randInt(-5,5); fa=randInt(5,10); sr=-randInt(20,30); }
+      else                   { st=-randInt(5,10);fa=randInt(8,12); sr=randInt(-5,5);   }
+      break;
+  }
+  c.stamina = clamp(c.stamina+st, 0, 100);
+  c.fatigue  = clamp(c.fatigue+fa, 0, 100);
+  c.stress   = clamp(c.stress+sr,  0, 100);
+}
 
-    state = S.loadState();
-    if(!state){
-      state = S.defaultState(window.AppData.config.defaults);
-      S.applyTheme(state.theme);
-      save();
+function buildActivityLogs(s, act, members) {
+  const logs = [];
+  const gn = s.groupName === '미설정' ? '아이돌 시뮬레이터' : s.groupName;
+  if (act.isGroupOnly) {
+    const tmpl = {
+      broadcast:[`🎤 ${gn}${josa(gn,'은는')} 음악방송에서 멋진 무대를 보여줬습니다`,'팬들의 환호성이 이어졌습니다'],
+      fansign:  [`🖊️ ${gn}${josa(gn,'은는')} 팬 사인회를 성공적으로 마쳤습니다`,'팬들과의 소중한 시간이 되었습니다'],
+    }[act.id] || [`🎪 ${gn}${josa(gn,'은는')} ${act.label}을 진행했습니다`];
+    logs.push(...tmpl);
+  } else if (act.type === 'rest') {
+    const names = members.map(m=>m.name).join(', ');
+    logs.push(`😴 ${names}${josa(members[0].name,'은는')} 휴식을 취했습니다`);
+  } else if (act.type !== 'practice') {
+    const names = members.map(m=>m.name).join(', ');
+    const icon = act.type==='schedule' ? '📋' : '⭐';
+    logs.push(`${icon} ${names}${josa(members[0].name,'은는')} ${act.label}을(를) 진행했습니다`);
+  }
+  return logs;
+}
+
+function executeConcertNow(s, kpiDelta) {
+  const earn = randInt(2000, 3000);
+  s.money += earn;
+  kpiDelta.fandom     += randInt(200, 500);
+  kpiDelta.popularity += randInt(10, 30);
+  s.concert = { isPlanned:false, daysLeft:0, venueName:'', prepPercent:0 };
+  const gn = s.groupName === '미설정' ? '아이돌 시뮬레이터' : s.groupName;
+  return [`🎪 ${gn}${josa(gn,'의')} 콘서트가 성황리에 마무리되었습니다 (+${formatMoney(earn)})`];
+}
+
+function updateAlbumProgress(s, subType, members) {
+  if (!s.album.isPreparing && !s.album.isReleased) return;
+  const gain = s.settings.albumProgressGain || 1.0;
+  const key  = { vocal:'vocal', dance:'choreography', songwriting:'lyrics', arrangement:'arrangement' }[subType];
+  if (!key) return;
+  const validPosFilter = m => {
+    if (subType==='vocal') return ['메인보컬','보컬','멀티'].includes(m.position);
+    if (subType==='dance') return ['메인댄서','댄서','멀티'].includes(m.position);
+    return true;
+  };
+  const contribution = members.filter(validPosFilter).reduce((sum, m) => {
+    const c = m.condition || { stamina:100, fatigue:0, stress:0 };
+    let bonus = 1.0 + (m.stats && m.stats[subType] ? m.stats[subType] : 0) / 100;
+    if (c.stamina<30) bonus*=0.5;
+    if (c.fatigue>=80) bonus*=0.5;
+    if (c.stress>=80)  bonus*=0.5;
+    return sum + bonus;
+  }, 0);
+  const delta = Math.round(contribution * gain * 2) / 2;
+  s.album.progress[key] = clamp((s.album.progress[key]||0) + delta, 0, 100);
+}
+
+function applyPracticeDecay(s) {
+  // memberDecay: { memberId -> [skillLabel, ...] }
+  const memberDecay = {};
+  s.members.forEach(m => {
+    ['vocal','dance','rap','songwriting','arrangement'].forEach(sk => {
+      const last = m.lastPractice[sk];
+      const diff = last === null ? 3 : s.day - last;
+      if (diff >= 3) {
+        const prev = m.stats[sk];
+        m.stats[sk] = Math.max(0, Math.round((m.stats[sk]-0.5)*10)/10);
+        if (prev !== m.stats[sk]) {
+          if (!memberDecay[m.id]) memberDecay[m.id] = { name: m.name, skills: [] };
+          memberDecay[m.id].skills.push(statLabel(sk));
+        }
+      }
+    });
+  });
+  const logs = [];
+  const entries = Object.values(memberDecay);
+  if (entries.length === 0) return logs;
+  // 멤버별로 한 줄: "박문대의 편곡·작사·랩 실력이 떨어졌습니다(-0.5)"
+  // 여러 멤버면 쉼표로 이어서 한 블록으로
+  const lines = entries.map(e => `${e.name}의 ${e.skills.join('·')} 실력이 떨어졌습니다(-0.5)`);
+  logs.push('📉 ' + lines.join(' / '));
+  logs.push('좀 더 연습에 집중해야 할 것 같습니다');
+  return logs;
+}
+
+function applyWeightChange(s, logs) {
+  const alertDelta = s.settings.weightAlertDelta || 3.0;
+  s.members.forEach(m => {
+    const delta = (Math.random()-0.5)*0.1;
+    m.weight = Math.round((m.weight+delta)*100)/100;
+    if      (m.weight > m.weightBase+alertDelta) { logs.push(`⚖️ ${m.name}의 체중이 다소 늘었습니다`); m.weightBase=m.weight; }
+    else if (m.weight < m.weightBase-alertDelta) { logs.push(`⚖️ ${m.name}의 체중이 많이 줄었습니다`); m.weightBase=m.weight; }
+  });
+}
+
+function autoAssign(s) {
+  smartAutoAssign(s, false);
+}
+
+// 소지금·컨디션·컴백 상태를 고려한 스마트 랜덤 배정
+function smartAutoAssign(s, isManualTrigger) {
+  const restId = s.settings.autoRestId || 'rest';
+  const inComeback = s.album.isReleased && s.album.comebackDaysLeft > 0;
+
+  // 배정 가능한 활동 후보 (비용 감당 가능한 것만)
+  const candidates = APP.scheduleData.filter(a => {
+    if (a.requiresComeback && !inComeback) return false;
+    if (a.isGroupOnly) return false; // 단체 활동은 별도 처리
+    return true;
+  });
+
+  // 총 비용 추정 후 감당 불가 활동 제거
+  const affordable = candidates.filter(a => {
+    if (a.cost <= 0) return true;
+    return s.money >= a.cost * s.members.length;
+  });
+
+  s.schedule = s.members.map(m => {
+    const c = m.condition || { stamina:100, fatigue:0, stress:0 };
+
+    // 컨디션 불량이면 무조건 휴식
+    if (c.stamina <= 20 || c.fatigue >= 85 || c.stress >= 85) {
+      return { memberId: m.id, activityId: restId, isManual: false };
     }
 
-    migrateIfNeeded();
-    S.applyTheme(state.theme);
+    // 가중치 계산: 미연습 능력치 우선, 컨디션 좋을수록 연습 선택 가능성 ↑
+    const pool = [];
 
-    bindUI();
-    renderAll();
+    // 연습 활동 — 오래 안 한 능력치일수록 가중치 높임
+    const practiceMap = {
+      vocal_prac:'vocal', dance_prac:'dance', rap_prac:'rap',
+      lyric_prac:'songwriting', arr_prac:'arrangement'
+    };
+    affordable.filter(a => a.type === 'practice').forEach(a => {
+      const sk = practiceMap[a.id];
+      const last = m.lastPractice && m.lastPractice[sk];
+      const daysSince = last === null ? 5 : s.day - last;
+      const weight = Math.max(1, daysSince * 2); // 오래될수록 높은 가중치
+      for (let i = 0; i < weight; i++) pool.push(a.id);
+    });
+
+    // 일반 스케줄 활동 (수익 있는 것)
+    if (c.stamina > 40 && c.fatigue < 70) {
+      affordable.filter(a => a.type === 'schedule' && a.earns).forEach(a => {
+        pool.push(a.id);
+        pool.push(a.id); // 가중치 2
+      });
+    }
+
+    // 휴식 — 피로 높을수록 가중치 증가
+    const restWeight = Math.max(1, Math.floor(c.fatigue / 20));
+    for (let i = 0; i < restWeight; i++) pool.push(restId);
+
+    const chosen = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : restId;
+    return { memberId: m.id, activityId: chosen, isManual: false };
+  });
+
+  // 비용 최종 체크
+  checkAndFixBudget(s);
+}
+
+function checkAndFixBudget(s) {
+  const actGroups = {};
+  s.schedule.forEach(e => { (actGroups[e.activityId]=actGroups[e.activityId]||0); actGroups[e.activityId]++; });
+  let total = 0;
+  Object.entries(actGroups).forEach(([id, cnt]) => {
+    const a = APP.scheduleData.find(x=>x.id===id);
+    if (!a||a.cost<=0) return;
+    total += a.isGroupOnly ? a.cost : a.cost*cnt;
+  });
+  if (total <= s.money) return;
+  const costly = Object.keys(actGroups)
+    .map(id=>APP.scheduleData.find(a=>a.id===id)).filter(a=>a&&a.cost>0)
+    .sort((a,b)=>b.cost-a.cost);
+  for (const act of costly) {
+    if (total <= s.money) break;
+    const cnt = actGroups[act.id]||1;
+    total -= act.isGroupOnly ? act.cost : act.cost*cnt;
+    s.schedule = s.schedule.map(e =>
+      e.activityId===act.id ? {...e,activityId:s.settings.autoRestId||'rest'} : e);
+  }
+}
+
+// ─── 다음날 ───
+window.onNextDay = function() {
+  const s = APP.state;
+  if (s.members.length===0) { showToast('멤버가 없습니다'); return; }
+  const {logs, kpiDelta} = executeDay(s);
+  const kpiStr = `팬덤 ${kpiDelta.fandom>=0?'+':''}${kpiDelta.fandom} | 인기도 ${kpiDelta.popularity>=0?'+':''}${kpiDelta.popularity}`;
+  pushLog(`[Day ${s.day}] 📌 Day ${s.day} 종료 (소지금: ${formatMoney(s.money)} | ${kpiStr})`);
+  logs.forEach(l => { if(l) pushLog(`[Day ${s.day}] ${l}`); });
+  s.day++; s.schedule=[];
+  pushLog(`[Day ${s.day}] 📌 Day ${s.day} 시작 (소지금: ${formatMoney(s.money)})`);
+  window.StateModule.saveState(s);
+  renderAll();
+  showToast(`Day ${s.day} 시작!`);
+};
+
+// ─── 7일 진행 ───
+window.onNext7Days = function() {
+  const s = APP.state;
+  if (s.members.length===0) { showToast('멤버가 없습니다'); return; }
+  const firstSch = [...s.schedule];
+  let warnDay = -1;
+  for (let i=0; i<7; i++) {
+    if (i===0 && firstSch.length>0) s.schedule=[...firstSch]; else s.schedule=[];
+    const {logs, kpiDelta} = executeDay(s);
+    const kpiStr = `팬덤 ${kpiDelta.fandom>=0?'+':''}${kpiDelta.fandom} | 인기도 ${kpiDelta.popularity>=0?'+':''}${kpiDelta.popularity}`;
+    pushLog(`[Day ${s.day}] 📌 Day ${s.day} 종료 (소지금: ${formatMoney(s.money)} | ${kpiStr})`);
+    logs.forEach(l => { if(l) pushLog(`[Day ${s.day}] ${l}`); });
+    if (s.money<=0 && warnDay<0) warnDay=s.day;
+    s.day++; s.schedule=[];
+    pushLog(`[Day ${s.day}] 📌 Day ${s.day} 시작 (소지금: ${formatMoney(s.money)})`);
+  }
+  s.schedule=[];
+  window.StateModule.saveState(s);
+  renderAll();
+  showToast(warnDay>0 ? `${warnDay}일차 소지금 부족으로 일부 활동이 제한되었습니다` : '7일 진행 완료!');
+};
+
+// ═══════════════════════════════════════════════════════
+// 관계 탭
+// ═══════════════════════════════════════════════════════
+// 이벤트 타입 한글 라벨
+const EV_TYPE_LABELS = {
+  friendship:'🤝 우정', flirting:'✨ 플러팅', date:'💞 데이트',
+  fight:'⚡ 싸움', reconcile:'🩹 화해', jealousy:'😣 질투',
+  avoid:'🚫 회피', awkward:'🫥 서먹함', after_breakup:'🌫️ 이별 후',
+  reunion:'❤️‍🩹 재결합', breakup:'💔 이별'
+};
+
+function renderRelationsTab() {
+  const s = APP.state;
+  const RM = window.RelationsModule;
+  const GR = window.GraphModule;
+
+  // ① 관계도
+  setTimeout(()=>{
+    GR.renderGraph(getEl('graph-canvas'), s);
+    GR.renderLegend(getEl('graph-legend'));
+  }, 60);
+
+  // ② 관계 수치 조회
+  const table = getEl('relation-table');
+  if (table) {
+    if (s.members.length < 2) {
+      table.innerHTML = '<div class="empty-hint">멤버가 2명 이상이어야 관계가 표시됩니다</div>';
+    } else {
+      const rows = [];
+      for (let i=0; i<s.members.length; i++) {
+        for (let j=i+1; j<s.members.length; j++) {
+          const a=s.members[i], b=s.members[j];
+          const rel = RM.ensureRelation(s, a.id, b.id);
+          const label = RM.getRelationLabel(rel, s.settings);
+          const color = GR.STAGE_COLORS[RM.hasTag(rel,'exLover')?'exLover':rel.stage]||'#999';
+          const bar = Math.round((rel.affection + 200) / 4); // 0~100%
+          const barColor = rel.affection >= 0 ? 'var(--accent)' : 'var(--danger)';
+          rows.push(`
+            <div class="rel-stat-row">
+              <div class="rel-stat-names">
+                <span class="rel-name-a">${a.name}</span>
+                <span class="rel-sep">↔</span>
+                <span class="rel-name-b">${b.name}</span>
+              </div>
+              <div class="rel-stat-bar-wrap">
+                <div class="rel-stat-bar">
+                  <div class="rel-stat-fill" style="width:${bar}%;background:${barColor}"></div>
+                </div>
+                <span class="rel-stat-num" style="color:${color}">${rel.affection>0?'+':''}${rel.affection}</span>
+                <span class="rel-stat-label" style="color:${color}">${label}</span>
+              </div>
+            </div>`);
+        }
+      }
+      table.innerHTML = rows.join('');
+    }
   }
 
-  document.addEventListener('DOMContentLoaded', init);
-})();
+  // ③ 수동 관계 이벤트 패널 — 쌍마다 아코디언, 전체 이벤트 목록 표시 (불가는 disabled)
+  const ALL_EV_TYPES = [
+    'friendship','flirting','date','fight','reconcile',
+    'jealousy','avoid','awkward','after_breakup','reunion','breakup'
+  ];
+
+  const evPanel = getEl('relation-event-panel');
+  if (evPanel) {
+    if (s.members.length < 2) {
+      evPanel.innerHTML = '<div class="empty-hint">멤버가 2명 이상이어야 이벤트를 실행할 수 있습니다</div>';
+    } else {
+      const memberOpts = s.members.map(m =>
+        `<option value="${m.id}">${m.name}${m.isLeader?' 👑':''} (${m.position})</option>`
+      ).join('');
+      evPanel.innerHTML = `
+        <div class="ev-select-row">
+          <div class="ev-select-group">
+            <label class="ev-select-label">A — 행동하는 쪽</label>
+            <select id="ev-sel-a" class="input ev-select" onchange="renderEvList()">
+              <option value="">선택하세요</option>${memberOpts}
+            </select>
+          </div>
+          <div class="ev-arrow-mid">→</div>
+          <div class="ev-select-group">
+            <label class="ev-select-label">B — 대상</label>
+            <select id="ev-sel-b" class="input ev-select" onchange="renderEvList()">
+              <option value="">선택하세요</option>${memberOpts}
+            </select>
+          </div>
+        </div>
+        <div id="ev-list-area"><p class="note" style="margin-top:8px">A와 B를 선택하면 이벤트 목록이 표시됩니다.</p></div>`;
+    }
+  }
+
+  // ④ 최근 관계 로그만
+  renderRelLogMini('log-mini-relation');
+}
+
+// A/B 드롭다운 선택 시 이벤트 목록 즉시 렌더
+const ALL_EV_TYPES_GLOBAL = [
+  'friendship','flirting','date','fight','reconcile',
+  'jealousy','avoid','awkward','after_breakup','reunion','breakup'
+];
+
+window.renderEvList = function() {
+  const s = APP.state;
+  const RM = window.RelationsModule;
+  const GR = window.GraphModule;
+  const listArea = getEl('ev-list-area');
+  if (!listArea) return;
+
+  const idA = getEl('ev-sel-a')?.value;
+  const idB = getEl('ev-sel-b')?.value;
+
+  if (!idA || !idB) { listArea.innerHTML = '<p class="note" style="margin-top:8px">A와 B를 선택하면 이벤트 목록이 표시됩니다.</p>'; return; }
+  if (idA === idB) { listArea.innerHTML = '<p class="note" style="margin-top:8px;color:var(--danger)">A와 B는 다른 멤버여야 합니다.</p>'; return; }
+
+  const a = s.members.find(m => m.id === idA);
+  const b = s.members.find(m => m.id === idB);
+  if (!a || !b) return;
+
+  const rel = RM.ensureRelation(s, idA, idB);
+  const allowed = RM.getAllowedTypes(rel, s.settings);
+  const color = GR.STAGE_COLORS[RM.hasTag(rel,'exLover')?'exLover':rel.stage] || '#999';
+
+  const loverBtn = RM.isLover(rel)
+    ? `<button class="ev-item ev-item-danger" onclick="doBreakupUI('${idA}','${idB}')">💔 이별</button>`
+    : `<button class="ev-item ev-item-love" onclick="doConfessUI('${idA}','${idB}')">💌 고백 (${a.name} → ${b.name})</button>`;
+
+  const evItems = ALL_EV_TYPES_GLOBAL.map(t => {
+    const isAllowed = allowed.includes(t);
+    const label = EV_TYPE_LABELS[t] || t;
+    const reason = isAllowed ? '' : getDisabledReason(t, rel, s.settings);
+    return isAllowed
+      ? `<button class="ev-item" onclick="quickRelEvent('${idA}','${idB}','${t}')">${label}</button>`
+      : `<button class="ev-item ev-item-disabled" disabled title="${reason}">${label}</button>`;
+  }).join('');
+
+  listArea.innerHTML = `
+    <div class="ev-rel-status" style="color:${color}">
+      ${a.name} → ${b.name} &nbsp;·&nbsp; ${RM.getRelationLabel(rel,s.settings)} &nbsp;·&nbsp; 호감도 ${rel.affection>0?'+':''}${rel.affection}
+    </div>
+    <div class="rel-ev-list" style="display:flex;padding:8px 0">
+      ${loverBtn}
+      ${evItems}
+    </div>`;
+};
+
+// 비활성화 이유 툴팁
+function getDisabledReason(type, rel, settings) {
+  const RM = window.RelationsModule;
+  const isEx = RM.isExLover(rel);
+  const isLover = RM.isLover(rel);
+  const hasColdWar = rel.coldWarDaysLeft > 0 || RM.hasTag(rel,'coldWar');
+  const isAvoiding = rel.avoidDaysLeft > 0;
+  const exOkMin = settings.exReunionOkMin || 100;
+  const exReunion = settings.exReunionPossible || 140;
+
+  if (isAvoiding) return '회피 기간 중 — avoid만 가능';
+  if (hasColdWar && !['fight','reconcile'].includes(type)) return '냉전 중 — 싸움/화해만 가능';
+  if (isLover && ['reunion','after_breakup','avoid','awkward','breakup'].includes(type))
+    return '연인 상태에서는 불가';
+  if (!isLover && !isEx && ['reconcile','reunion','after_breakup','avoid','awkward'].includes(type))
+    return '해당 관계 상태가 아님';
+  if (isEx && isAvoiding && type !== 'avoid') return '회피 기간 중';
+  if (isEx && !isAvoiding && rel.affection <= (settings.exAwkwardClear||80)
+      && !['after_breakup','awkward','avoid'].includes(type)) return '서먹함 단계 — 이별 후/서먹함만 가능';
+  if (isEx && rel.affection < exOkMin && ['date','flirting','friendship'].includes(type))
+    return `재접근 허용치(${exOkMin}) 미달`;
+  if (isEx && rel.affection < exReunion && type === 'reunion') return `재결합 가능 호감도(${exReunion}) 미달`;
+  if (!isLover && type === 'breakup') return '연인 상태가 아님';
+  if (type === 'jealousy' && rel.affection < 0) return '호감도 부족 (질투 불가)';
+  return '현재 관계 상태에서 불가';
+}
+
+// 이벤트 타입 버튼 직접 실행 (모달 없이)
+window.quickRelEvent = function(idA, idB, type) {
+  const s=APP.state, RM=window.RelationsModule, EM=window.EventsModule;
+  const rel=RM.ensureRelation(s, idA, idB);
+  const a=s.members.find(m=>m.id===idA), b=s.members.find(m=>m.id===idB);
+  if (!a || !b) return;
+
+  // breakup은 confirm
+  if (type === 'breakup') { doBreakupUI(idA, idB); return; }
+
+  // manualFail 체크
+  if (RM.isExLover(rel) && rel.affection < (s.settings.exReunionOkMin||100)
+      && ['friendship','flirting','date'].includes(type)) {
+    const fail=EM.buildManualFail(type, a, b);
+    if(fail){
+      const mfq1=fail.first.endsWith('.')?fail.first:fail.first+'.';
+      const mfq2=fail.second?(fail.second.endsWith('.')?fail.second:fail.second+'.'):'';
+      pushLog(`[Day ${s.day}] 🌫️ ${mfq1}${mfq2?' '+mfq2:''}`);
+    }
+    window.StateModule.saveState(s); renderAll(); return;
+  }
+
+  if (!APP.templates) { showToast('템플릿 없음'); return; }
+  const cands=APP.templates.templates.filter(t=>t.type===type);
+  if (!cands.length) { showToast('해당 이벤트 없음'); return; }
+  const tpl=EM.weightedRandom(cands, t=>t.weight||1);
+  const ev=EM.applyTemplate(tpl, s, a, b, rel);
+  if(ev){
+    const fd=ev.first.endsWith('.')?ev.first:ev.first+'.';
+    const sd=ev.second?(ev.second.endsWith('.')?ev.second:ev.second+'.'):'';
+    const relLine=`[Day ${s.day}] ${ev.icon} ${fd}${sd?' '+sd:''}`;
+    pushLog(relLine);
+    pushRelLog(relLine);
+  }
+  window.StateModule.saveState(s);
+  renderRelationsTab();
+  renderLogTab();
+  showToast(`${EV_TYPE_LABELS[type]||type} 이벤트 실행`);
+};
+
+window.doBreakupUI = function(idA, idB) {
+  showConfirm('정말 이별시키겠습니까?', () => {
+    const s=APP.state, RM=window.RelationsModule, EM=window.EventsModule;
+    const rel=RM.ensureRelation(s,idA,idB);
+    const a=s.members.find(m=>m.id===idA), b=s.members.find(m=>m.id===idB);
+    RM.doBreakup(rel, s.settings);
+    if (APP.templates && a && b) {
+      const tmpl=APP.templates.templates.find(t=>t.id==='bk_01');
+      if (tmpl) {
+        const first=EM.resolveTemplate(tmpl,{A:a.name,B:b.name});
+        const second=EM.pickSecondLine(tmpl,false);
+        const bkFirst=first.endsWith('.')?first:first+'.';
+        const bkSecond=second?(second.endsWith('.')?second:second+'.'):'';
+        const bkLine=`[Day ${s.day}] 💔 ${bkFirst}${bkSecond?' '+bkSecond:''}`;
+        pushLog(bkLine);
+        pushRelLog(bkLine);
+      }
+    }
+    window.StateModule.saveState(s); renderAll();
+  });
+};
+
+window.doConfessUI = function(idA, idB) {
+  const s=APP.state, result=window.EventsModule.doConfess(s,idA,idB);
+  if (!result) return;
+  if (result.type==='already_lover') { showPopup('이미 연인입니다'); return; }
+  if (result.type==='romance_disabled') {
+    showPopup('현재 연애가 허용되지 않는 설정입니다.\n설정 탭에서 변경할 수 있습니다');
+    return;
+  }
+  if (result.type==='gender_block') {
+    const reason = result.reason === 'same' ? '동성 연애가 허용되지 않습니다' : '이성 연애가 허용되지 않습니다';
+    const cl7=`[Day ${s.day}] 💌 ${result.from.name}의 고백 — ${reason}`;
+    pushLog(cl7); pushRelLog(cl7);
+    const cl8='마음은 있지만 이어질 수 없었습니다.';
+    pushLog(cl8); pushRelLog(cl8);
+    window.StateModule.saveState(s); renderAll(); return;
+  }
+  if (result.type==='monogamy_block') {
+    const cl1=`[Day ${s.day}] 💌 ${result.from.name}의 고백 — 이미 연애 중인 멤버가 있습니다`;
+    pushLog(cl1); pushRelLog(cl1);
+    const cl2='고백한 쪽의 마음이 복잡해집니다.';
+    pushLog(cl2); pushRelLog(cl2);
+  } else if (result.type==='success') {
+    const cl3=`[Day ${s.day}] 💑 ${result.from.name}과 ${result.to.name}이 연인이 되었습니다`;
+    pushLog(cl3); pushRelLog(cl3);
+    const cl4='두 사람의 마음이 하나로 이어졌습니다.';
+    pushLog(cl4); pushRelLog(cl4);
+  } else {
+    const cl5=`[Day ${s.day}] 💌 ${result.from.name}의 고백`;
+    pushLog(cl5); pushRelLog(cl5);
+    const cl6='마음이 복잡하지만 아직은 아닌 것 같습니다.';
+    pushLog(cl6); pushRelLog(cl6);
+  }
+  window.StateModule.saveState(s); renderAll();
+};
+
+window.openRelEventUI = function(idA, idB) {
+  const s=APP.state, RM=window.RelationsModule;
+  const a=s.members.find(m=>m.id===idA), b=s.members.find(m=>m.id===idB);
+  const rel=RM.ensureRelation(s,idA,idB);
+  const allowed=RM.getAllowedTypes(rel,s.settings);
+  if (!APP.templates) { showToast('템플릿 없음'); return; }
+  const TL={friendship:'우정',flirting:'플러팅',date:'데이트',fight:'싸움',reconcile:'화해',
+    jealousy:'질투',avoid:'회피',awkward:'서먹함',after_breakup:'이별 후',reunion:'재결합',breakup:'이별'};
+  showModal(`
+    <h3>${a.name} ↔ ${b.name}</h3>
+    <p style="margin-bottom:10px;font-size:.82rem;color:var(--text-sub)">호감도: ${rel.affection} · ${RM.getRelationLabel(rel,s.settings)}</p>
+    <div class="form-group"><label>이벤트 유형</label>
+      <select id="ev-type-sel" class="input">
+        ${allowed.map(t=>`<option value="${t}">${TL[t]||t}</option>`).join('')}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="execManualRelEvent('${idA}','${idB}')">실행</button>
+      <button class="btn btn-ghost" onclick="closeModal()">취소</button>
+    </div>`);
+};
+
+window.execManualRelEvent = function(idA, idB) {
+  const type=getEl('ev-type-sel')?.value;
+  if (!type) return;
+  const s=APP.state, RM=window.RelationsModule, EM=window.EventsModule;
+  const rel=RM.ensureRelation(s,idA,idB);
+  const a=s.members.find(m=>m.id===idA), b=s.members.find(m=>m.id===idB);
+  if (RM.isExLover(rel) && rel.affection<(s.settings.exReunionOkMin||100)
+      && ['friendship','flirting','date'].includes(type)) {
+    const fail=EM.buildManualFail(type,a,b);
+    if(fail){
+      const mf1=fail.first.endsWith('.')?fail.first:fail.first+'.';
+      const mf2=fail.second?(fail.second.endsWith('.')?fail.second:fail.second+'.'):'';
+      pushLog(`[Day ${s.day}] 🌫️ ${mf1}${mf2?' '+mf2:''}`);
+    }
+    window.StateModule.saveState(s); renderAll(); closeModal(); return;
+  }
+  const cands=APP.templates.templates.filter(t=>t.type===type);
+  if (!cands.length){ closeModal(); return; }
+  const tpl=EM.weightedRandom(cands,t=>t.weight||1);
+  const ev=EM.applyTemplate(tpl,s,a,b,rel);
+  if(ev){
+    const fd2=ev.first.endsWith('.')?ev.first:ev.first+'.';
+    const sd2=ev.second?(ev.second.endsWith('.')?ev.second:ev.second+'.'):'';
+    pushLog(`[Day ${s.day}] ${ev.icon} ${fd2}${sd2?' '+sd2:''}`);
+  }
+  window.StateModule.saveState(s); renderAll(); closeModal();
+};
+
+// ═══════════════════════════════════════════════════════
+// 앨범·콘서트 탭
+// ═══════════════════════════════════════════════════════
+function averageProgress(prog) {
+  const v=Object.values(prog); return v.reduce((a,b)=>a+b,0)/v.length;
+}
+function renderAlbumTab() {
+  const s=APP.state, alb=s.album, prog=alb.progress;
+  const progEl=getEl('album-progress');
+  if (progEl) {
+    if (alb.isPreparing||alb.isReleased) {
+      progEl.innerHTML=[['lyrics','작사·작곡'],['arrangement','편곡'],['vocal','보컬'],['choreography','안무']].map(([k,l])=>`
+        <div class="prog-row">
+          <span class="prog-label">${l}</span>
+          <div class="prog-bar"><div class="prog-fill" style="width:${prog[k]||0}%"></div></div>
+          <span class="prog-num">${(prog[k]||0).toFixed(1)}%</span>
+        </div>`).join('')
+        +`<div class="album-status">${alb.isReleased?`컴백 중 (${alb.comebackDaysLeft}일 남음)`:'준비 중'}${alb.title?` — "${alb.title}"`:''}</div>
+           <div class="album-quality">평균 완성도: ${averageProgress(prog).toFixed(1)}%</div>`;
+    } else {
+      progEl.innerHTML='<div class="empty-hint">앨범 준비를 시작하려면 아래 버튼을 누르세요</div>';
+    }
+  }
+  const c=s.concert||{isPlanned:false,daysLeft:0,prepPercent:0};
+  if(!s.concert) s.concert=c;
+  setEl('concert-status', c.isPlanned?`D-${c.daysLeft}일 (준비 ${Math.round(c.prepPercent||0)}%)${c.venueName?' — '+c.venueName:''}`:'예정 없음');
+}
+
+window.onStartAlbum = function() {
+  const s=APP.state;
+  if (s.album.isReleased&&s.album.comebackDaysLeft>0){showPopup('컴백 활동 중에는 다른 앨범을 발매할 수 없습니다');return;}
+  s.album.isPreparing=true; s.album.isReleased=false;
+  s.album.progress={lyrics:0,arrangement:0,vocal:0,choreography:0};
+  s.album.title=''; s.album.releaseInfo={};
+  window.StateModule.saveState(s); renderAlbumTab(); showToast('앨범 준비를 시작했습니다');
+};
+
+window.onReleaseAlbum = function() {
+  const s=APP.state;
+  if (!s.album.isPreparing){showPopup('먼저 앨범 준비를 시작해주세요');return;}
+  if (s.album.isReleased&&s.album.comebackDaysLeft>0){showPopup('컴백 활동 중에는 다른 앨범을 발매할 수 없습니다');return;}
+  if (s.money<500){showPopup(`앨범 발매 비용이 부족합니다\n필요: 500원 / 보유: ${formatMoney(s.money)}`);return;}
+  showModal(`
+    <h3>앨범 발매</h3>
+    <div class="form-group"><label>타이틀곡 제목 *</label><input id="alb-title" class="input" placeholder="타이틀곡 제목"></div>
+    <div class="form-group"><label>장르 *</label><input id="alb-genre" class="input" placeholder="발라드, 댄스, 팝..."></div>
+    <div class="form-group"><label>컨셉 *</label><input id="alb-concept" class="input" placeholder="청량, 퇴폐미, 걸크러쉬..."></div>
+    <div class="form-group"><label>작사·작곡 담당 *</label>
+      <select id="alb-lyricist" class="input"><option value="">선택</option>${s.members.map(m=>`<option value="${m.id}">${m.name}</option>`).join('')}</select>
+    </div>
+    <div class="form-group"><label>편곡 담당 *</label>
+      <select id="alb-arranger" class="input"><option value="">선택</option>${s.members.map(m=>`<option value="${m.id}">${m.name}</option>`).join('')}</select>
+    </div>
+    <p class="note">발매 비용: 500원 · 현재 잔액: ${formatMoney(s.money)}</p>
+    <div class="modal-actions">
+      <button class="btn" onclick="confirmReleaseAlbum()">발매</button>
+      <button class="btn btn-ghost" onclick="closeModal()">취소</button>
+    </div>`);
+};
+
+window.confirmReleaseAlbum = function() {
+  const title=getEl('alb-title')?.value?.trim(),genre=getEl('alb-genre')?.value?.trim(),
+    concept=getEl('alb-concept')?.value?.trim(),
+    lyricist=getEl('alb-lyricist')?.value,arranger=getEl('alb-arranger')?.value;
+  const miss=[];
+  if(!title) miss.push('타이틀곡 제목'); if(!genre) miss.push('장르');
+  if(!concept) miss.push('컨셉'); if(!lyricist) miss.push('작사·작곡 담당'); if(!arranger) miss.push('편곡 담당');
+  if(miss.length>0){showPopup('필수 항목이 누락되었습니다.\n'+miss.join(', '));return;}
+  const s=APP.state;
+  s.money-=500;
+  const avg=averageProgress(s.album.progress);
+  const bonus=avg>=(s.settings.albumQualityThresholdHigh||80)?1.2:avg<(s.settings.albumQualityThresholdLow||50)?0.8:1.0;
+  s.kpi.fandom+=Math.round(randInt(50,200)*bonus);
+  s.album={...s.album,isPreparing:false,isReleased:true,
+    comebackDaysLeft:s.settings.comebackDays||21,title,releaseInfo:{genre,concept,lyricist,arranger}};
+  const gn=s.groupName==='미설정'?'아이돌 시뮬레이터':s.groupName;
+  pushLog(`[Day ${s.day}] 💿 ${gn}${josa(gn,'의')} 새 앨범 "${title}"이 발매되었습니다!`);
+  pushLog(`컴백 기간 ${s.album.comebackDaysLeft}일이 시작되었습니다`);
+  window.StateModule.saveState(s); renderAll(); closeModal(); showToast(`"${title}" 발매 완료!`);
+};
+
+window.onPlanConcert = function() {
+  const s=APP.state;
+  if(s.concert&&s.concert.isPlanned){showPopup('이미 콘서트가 예정되어 있습니다');return;}
+  if(s.money<1000){showPopup(`콘서트 예약 비용이 부족합니다\n필요: 1,000원 / 보유: ${formatMoney(s.money)}`);return;}
+  showModal(`
+    <h3>콘서트 예약</h3>
+    <div class="form-group"><label>개최 예정일 (일 후, 3~30) *</label>
+      <input id="concert-days" class="input" type="number" min="3" max="30" value="7"></div>
+    <div class="form-group"><label>장소명 (선택)</label>
+      <input id="concert-venue" class="input" placeholder="공연장 이름"></div>
+    <p class="note">예약 비용: 1,000원 · 현재 잔액: ${formatMoney(s.money)}</p>
+    <div class="modal-actions">
+      <button class="btn" onclick="confirmConcert()">예약</button>
+      <button class="btn btn-ghost" onclick="closeModal()">취소</button>
+    </div>`);
+};
+
+window.confirmConcert = function() {
+  const days=parseInt(getEl('concert-days')?.value||'7');
+  if(isNaN(days)||days<3||days>30){showPopup('개최 예정일은 3~30일 사이여야 합니다');return;}
+  const s=APP.state;
+  s.money-=1000;
+  s.concert={isPlanned:true,daysLeft:days,venueName:getEl('concert-venue')?.value?.trim()||'',prepPercent:0};
+  window.StateModule.saveState(s); renderAll(); closeModal(); showToast(`콘서트 D-${days}로 예약되었습니다`);
+};
+
+// ═══════════════════════════════════════════════════════
+// 설정 탭
+// ═══════════════════════════════════════════════════════
+function renderSettingsTab() {
+  const s=APP.state;
+  const gn=getEl('settings-group-name');
+  if(gn) gn.value=s.groupName==='미설정'?'':s.groupName;
+  const th=getEl('settings-theme');
+  if(th) th.value=s.theme;
+  const md=getEl('settings-mode');
+  if(md) md.value=s.settings.relationshipMode;
+  const ar=getEl('settings-allow-romance');
+  if(ar) ar.checked=s.settings.allowRomance!==false;
+  // 연애 비허용이면 하위 옵션 dim 처리
+  const sgLabel=getEl('label-same-gender');
+  const ogLabel=getEl('label-opp-gender');
+  const romanceOn=s.settings.allowRomance!==false;
+  if(sgLabel) sgLabel.style.opacity=romanceOn?'1':'0.35';
+  if(ogLabel) ogLabel.style.opacity=romanceOn?'1':'0.35';
+  const sg=getEl('settings-same-gender');
+  if(sg){ sg.checked=!!s.settings.allowSameGender; sg.disabled=!romanceOn; }
+  const og=getEl('settings-opp-gender');
+  if(og){ og.checked=!!s.settings.allowOppositeGender; og.disabled=!romanceOn; }
+  // 헤더 테마 토글 동기화
+  const thBtn=getEl('header-theme-btn');
+  if(thBtn) thBtn.textContent=s.theme==='dark'?'☀️':'🌙';
+}
+window.onSaveGroupName=function(){
+  const v=getEl('settings-group-name')?.value?.trim();
+  APP.state.groupName=v||'미설정';
+  window.StateModule.saveState(APP.state);
+  renderDashboard(); renderMembersTab(); showToast('그룹명을 변경했습니다');
+};
+window.onChangeTheme=function(v){APP.state.theme=v;applyTheme(v);window.StateModule.saveState(APP.state);showToast('테마를 변경했습니다');};
+window.onChangeMode=function(v){APP.state.settings.relationshipMode=v;window.StateModule.saveState(APP.state);};
+window.onChangeAllowRomance=function(v){
+  APP.state.settings.allowRomance=v;
+  window.StateModule.saveState(APP.state);
+  renderSettingsTab(); // dim 처리 즉시 반영
+};
+window.onChangeSameGender=function(v){APP.state.settings.allowSameGender=v;window.StateModule.saveState(APP.state);};
+window.onChangeOppGender =function(v){APP.state.settings.allowOppositeGender=v;window.StateModule.saveState(APP.state);};
+window.onToggleTheme=function(){
+  const s=APP.state;
+  s.theme=s.theme==='dark'?'light':'dark';
+  applyTheme(s.theme);
+  window.StateModule.saveState(s);
+  showToast('테마를 변경했습니다');
+  const btn=getEl('header-theme-btn');
+  if(btn) btn.textContent=s.theme==='dark'?'☀️':'🌙';
+};
+
+// ═══════════════════════════════════════════════════════
+// 로그
+// ═══════════════════════════════════════════════════════
+function renderLogTab(){const el=getEl('log-full');if(!el)return;el.textContent=APP.state.log.join('\n');}
+function renderLogMini(id){
+  const el=getEl(id);if(!el)return;
+  const N=APP.state.settings.logPreviewN||30;
+  el.textContent=APP.state.log.slice(0,N).join('\n');
+}
+function renderRelLogMini(id){
+  const el=getEl(id);if(!el)return;
+  const N=APP.state.settings.logPreviewN||30;
+  const relLog=APP.state.relLog||[];
+  el.textContent=relLog.slice(0,N).join('\n')||'(관계 이벤트 없음)';
+}
+function pushLog(line){APP.state.log.unshift(line);}
+function pushRelLog(line){
+  if(!APP.state.relLog) APP.state.relLog=[];
+  APP.state.relLog.unshift(line);
+}
+
+// ═══════════════════════════════════════════════════════
+// 멤버 CRUD
+// ═══════════════════════════════════════════════════════
+window.openAddMember = () => showMemberForm(null);
+window.openEditMember = id => { const m=APP.state.members.find(m=>m.id===id); if(m) showMemberForm(m); };
+
+function showMemberForm(member) {
+  const {VALID_POSITIONS,MBTI_LIST}=window.MembersModule;
+  const isEdit=!!member, m=member||{}, st=m.stats||{};
+  showModal(`
+    <h3>${isEdit?'멤버 수정':'멤버 추가'}</h3>
+    <div class="member-form">
+      <div class="form-row">
+        <div class="form-group"><label>이름 *</label><input id="mf-name" class="input" value="${m.name||''}" placeholder="이름"></div>
+        <div class="form-group"><label>성별 *</label>
+          <select id="mf-gender" class="input"><option value="">선택</option>
+            <option value="남"${m.gender==='남'?' selected':''}>남</option>
+            <option value="여"${m.gender==='여'?' selected':''}>여</option>
+          </select>
+        </div>
+        <div class="form-group"><label>MBTI *</label>
+          <select id="mf-mbti" class="input"><option value="">선택</option>
+            ${MBTI_LIST.map(t=>`<option value="${t}"${m.mbti===t?' selected':''}>${t}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>키(cm) *</label><input id="mf-height" class="input" type="number" value="${m.height||''}"></div>
+        <div class="form-group"><label>몸무게(kg) *</label><input id="mf-weight" class="input" type="number" step="0.01" value="${m.weight||''}"></div>
+        <div class="form-group"><label>포지션 *</label>
+          <select id="mf-pos" class="input"><option value="">선택</option>
+            ${VALID_POSITIONS.map(p=>`<option value="${p}"${m.position===p?' selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label>리더 여부</label>
+        <select id="mf-leader" class="input">
+          <option value="0"${!m.isLeader?' selected':''}>일반 멤버</option>
+          <option value="1"${m.isLeader?' selected':''}>리더</option>
+        </select>
+      </div>
+      <div class="stats-grid">
+        ${[['vocal','보컬'],['dance','댄스'],['rap','랩'],['looks','외모'],['charm','끼'],['songwriting','작사작곡'],['arrangement','편곡']].map(([k,l])=>`
+        <div class="form-group"><label>${l} *</label>
+          <input id="mf-${k}" class="input" type="number" min="0" step="0.5" value="${st[k]!=null?st[k]:0}">
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="saveMemberForm(${isEdit?`'${m.id}'`:'null'})">${isEdit?'저장':'추가'}</button>
+      <button class="btn btn-ghost" onclick="closeModal()">취소</button>
+    </div>`);
+}
+
+window.saveMemberForm = function(editId) {
+  const s=APP.state, MM=window.MembersModule;
+  const data={
+    name:getEl('mf-name')?.value||'', gender:getEl('mf-gender')?.value||'',
+    mbti:getEl('mf-mbti')?.value||'', height:getEl('mf-height')?.value||'',
+    weight:getEl('mf-weight')?.value||'', position:getEl('mf-pos')?.value||'',
+    isLeader:getEl('mf-leader')?.value==='1',
+    vocal:getEl('mf-vocal')?.value, dance:getEl('mf-dance')?.value,
+    rap:getEl('mf-rap')?.value, looks:getEl('mf-looks')?.value,
+    charm:getEl('mf-charm')?.value, songwriting:getEl('mf-songwriting')?.value,
+    arrangement:getEl('mf-arrangement')?.value
+  };
+  const errors=MM.validateMemberData(data, s.members, editId);
+  if(errors.length>0){showPopup('필수 항목이 누락되었습니다.\n'+errors.join('\n'));return;}
+  if(!editId && s.members.length>=25){showPopup('멤버는 최대 25명까지 추가할 수 있습니다');return;}
+  const conflict=MM.checkUniquePositionConflict(data.position, s.members, editId);
+  if(conflict){
+    const sp=data.position.replace('메인','');
+    showConfirm(`이미 [${data.position}]인 ${conflict.name}이 있습니다.\n${conflict.name}의 포지션을 [${sp}]으로 변경할까요?`,()=>{
+      conflict.position=sp; applyMemberSave(s,data,editId);
+    });
+    return;
+  }
+  applyMemberSave(s,data,editId);
+};
+
+function applyMemberSave(s,data,editId){
+  const MM=window.MembersModule;
+  if(data.isLeader) s.members.forEach(m=>{m.isLeader=false;});
+  if(editId){
+    const m=s.members.find(m=>m.id===editId);
+    if(m){
+      m.name=data.name.trim(); m.gender=data.gender; m.mbti=data.mbti;
+      m.height=Number(data.height); m.weight=Math.round(parseFloat(data.weight)*100)/100;
+      m.position=data.position; m.isLeader=!!data.isLeader;
+      ['vocal','dance','rap','looks','charm','songwriting','arrangement'].forEach(k=>{
+        m.stats[k]=Math.max(0,Number(data[k])||0);
+      });
+    }
+  } else {
+    const nm=MM.createMember(data);
+    if(s.members.length===0) nm.isLeader=true;
+    if(data.isLeader) nm.isLeader=true;
+    // condition/stats 등 필드가 반드시 있도록 보정
+    window.StateModule.migrateMember(nm);
+    s.members.push(nm);
+  }
+  window.StateModule.saveState(s); renderAll(); closeModal();
+  showToast(editId?'멤버를 수정했습니다':'멤버를 추가했습니다');
+}
+
+window.deleteMember = function(id){
+  const s=APP.state, m=s.members.find(m=>m.id===id);
+  if(!m) return;
+  if(m.isLeader && s.members.length>1){
+    showConfirm(`리더 ${m.name}을 삭제합니다.\n삭제 후 바로 새 리더를 지정해야 합니다.`,()=>{
+      s.members=s.members.filter(mb=>mb.id!==id);
+      s.schedule=s.schedule.filter(e=>e.memberId!==id);
+      window.StateModule.saveState(s); renderAll(); showLeaderAssignPopup();
+    });
+  } else {
+    showConfirm(`${m.name}을 삭제하시겠습니까?`,()=>{
+      s.members=s.members.filter(mb=>mb.id!==id);
+      s.schedule=s.schedule.filter(e=>e.memberId!==id);
+      window.StateModule.saveState(s); renderAll(); showToast('멤버를 삭제했습니다');
+    });
+  }
+};
+
+function showLeaderAssignPopup(){
+  const s=APP.state;
+  if(s.members.length===0){showToast('멤버가 없습니다');return;}
+  showModal(`
+    <h3>새 리더를 지정해주세요</h3>
+    <div id="leader-assign-list">
+      ${s.members.map(m=>`<div class="leader-option" onclick="assignLeader('${m.id}')">
+        <span>${m.name}</span><span class="badge badge-pos">${m.position}</span>
+      </div>`).join('')}
+    </div>`,false);
+}
+window.assignLeader=function(id){
+  APP.state.members.forEach(m=>{m.isLeader=m.id===id;});
+  window.StateModule.saveState(APP.state); renderAll(); closeModal(); showToast('리더가 지정되었습니다');
+};
+window.setLeader=function(id){
+  APP.state.members.forEach(m=>{m.isLeader=m.id===id;});
+  window.StateModule.saveState(APP.state); renderMembersTab(); showToast('리더가 변경되었습니다');
+};
+
+// ═══════════════════════════════════════════════════════
+// 저장 / 내보내기
+// ═══════════════════════════════════════════════════════
+window.onSave     =()=>{window.StateModule.saveState(APP.state);showToast('저장했습니다');};
+window.onExport   =()=>{window.StorageModule.exportJSON(APP.state);showToast('내보냈습니다');};
+window.onExportLog=()=>{window.StorageModule.exportLogTXT(APP.state);showToast('로그TXT를 저장했습니다');};
+window.onExportMembers=()=>{window.StorageModule.exportMembersJSON(APP.state);showToast('멤버를 내보냈습니다');};
+window.onImport   =()=>{getEl('import-file').click();};
+window.onImportMembers=()=>{getEl('import-members-file').click();};
+
+window.onImportFile = async function(input){
+  const file=input.files[0]; if(!file) return;
+  try {
+    const json=await window.StorageModule.readFile(file);
+    const ns=window.StateModule.loadStateFromJSON(json);
+    if(!ns){showPopup('파일을 읽을 수 없습니다');return;}
+    APP.state=ns; window.StateModule.saveState(APP.state);
+    renderAll(); showToast('불러왔습니다');
+  } catch(e){showPopup('파일 형식 오류');}
+  input.value='';
+};
+window.onImportMembersFile = async function(input){
+  const file=input.files[0]; if(!file) return;
+  try {
+    const members=await window.StorageModule.readFile(file);
+    if(!Array.isArray(members)){showPopup('멤버 파일 형식 오류');return;}
+    APP.state.members=members; window.StateModule.saveState(APP.state);
+    renderAll(); showToast('멤버를 불러왔습니다');
+  } catch(e){showPopup('파일 형식 오류');}
+  input.value='';
+};
+window.onReset=function(){
+  showConfirm('정말 초기화하시겠습니까? 모든 데이터가 삭제됩니다.',()=>{
+    APP.state=window.StateModule.createDefaultState();
+    window.StateModule.saveState(APP.state); renderAll(); showToast('초기화되었습니다');
+  });
+};
+
+// ═══════════════════════════════════════════════════════
+// 그룹명 팝업
+// ═══════════════════════════════════════════════════════
+function showGroupNamePopup(){
+  showModal(`
+    <h3>그룹명을 입력해주세요</h3>
+    <div class="form-group"><input id="gn-input" class="input" placeholder="그룹명 (비워두면 미설정)" autofocus></div>
+    <div class="modal-actions"><button class="btn" onclick="saveGroupNameFromPopup()">확인</button></div>
+  `,false);
+  setTimeout(()=>{
+    const inp=getEl('gn-input');
+    if(inp){inp.focus();inp.addEventListener('keydown',e=>{if(e.key==='Enter')window.saveGroupNameFromPopup();});}
+  },80);
+}
+window.saveGroupNameFromPopup=function(){
+  const v=getEl('gn-input')?.value?.trim();
+  APP.state.groupName=v||'미설정';
+  window.StateModule.saveState(APP.state);
+  renderDashboard(); renderMembersTab(); closeModal();
+};
+
+// ═══════════════════════════════════════════════════════
+// UI 헬퍼 — toast / popup / confirm / modal
+// ═══════════════════════════════════════════════════════
+let _toastTimer=null;
+function showToast(msg){
+  let t=getEl('toast');
+  if(!t){t=document.createElement('div');t.id='toast';document.body.appendChild(t);}
+  t.textContent=msg; t.classList.add('show');
+  if(_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>t.classList.remove('show'),1600);
+}
+
+function showPopup(msg){
+  showModal(`
+    <div class="popup-msg">${msg.replace(/\n/g,'<br>')}</div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">확인</button></div>`);
+}
+
+function showConfirm(msg, onYes){
+  showModal(`
+    <div class="popup-msg">${msg.replace(/\n/g,'<br>')}</div>
+    <div class="modal-actions">
+      <button class="btn" id="confirm-yes-btn">확인</button>
+      <button class="btn btn-ghost" onclick="closeModal()">취소</button>
+    </div>`);
+  setTimeout(()=>{
+    const btn=getEl('confirm-yes-btn');
+    if(btn) btn.onclick=()=>{onYes();closeModal();};
+  },30);
+}
+
+let _allowClose=true;
+function showModal(html, allowClose=true){
+  _allowClose=allowClose;
+  let ov=getEl('modal-overlay');
+  if(!ov){
+    ov=document.createElement('div'); ov.id='modal-overlay';
+    ov.addEventListener('click',e=>{if(e.target===ov&&_allowClose)closeModal();});
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML=`<div class="modal-box" role="dialog">${html}</div>`;
+  ov.classList.add('active');
+  setTimeout(()=>{const fi=ov.querySelector('input,select');if(fi)fi.focus();},60);
+}
+window.closeModal=function(){
+  const ov=getEl('modal-overlay'); if(ov)ov.classList.remove('active');
+};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&_allowClose)closeModal();});
+
+// ═══════════════════════════════════════════════════════
+// 시작
+// ═══════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', init);

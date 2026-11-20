@@ -1,116 +1,93 @@
-(function(){
-  'use strict';
+// ── members.js ── 멤버 CRUD, 검증, 역할 제한 ─────────────────────────────
+'use strict';
 
-  function positionLabel(pos){
-    const map = {
-      main_vocal: '메인보컬',
-      main_dance: '메인댄서',
-      main_rap: '메인래퍼',
-      vocal: '보컬',
-      dance: '댄서',
-      rap: '래퍼'
-    };
-    return map[pos] || '';
+const VALID_POSITIONS = ['메인보컬','보컬','메인댄서','댄서','메인래퍼','래퍼','멀티'];
+const UNIQUE_POSITIONS = ['메인보컬','메인댄서','메인래퍼'];
+const MBTI_LIST = ['INTJ','INTP','ENTJ','ENTP','INFJ','INFP','ENFJ','ENFP',
+                   'ISTJ','ISFJ','ESTJ','ESFJ','ISTP','ISFP','ESTP','ESFP'];
+
+let _memberIdCounter = 1;
+
+function genMemberId() {
+  return 'mb_' + (Date.now()) + '_' + (_memberIdCounter++);
+}
+
+// 받침 유무로 조사 자동 선택
+function josa(name, type) {
+  const last = name.charCodeAt(name.length - 1);
+  const hasBatchim = last >= 0xAC00 && ((last - 0xAC00) % 28) !== 0;
+  switch(type) {
+    case '은는': return hasBatchim ? '은' : '는';
+    case '이가': return hasBatchim ? '이' : '가';
+    case '을를': return hasBatchim ? '을' : '를';
+    case '와과': return hasBatchim ? '과' : '와';
+    case '에게': return '에게';
+    case '의':   return '의';
+    default: return '';
   }
+}
 
-  function hasMainPosition(state, pos){
-    return state.members.some(m => m.position === pos);
-  }
-
-  function currentLeaderId(state){
-    const leader = state.members.find(m => m.isLeader);
-    return leader ? leader.id : null;
-  }
-
-  function validateNewMember(state, m){
-    if(state.members.length >= 25) return {ok:false, msg:'멤버는 최대 25명입니다'};
-    if(!m.name || !m.name.trim()) return {ok:false, msg:'이름을 입력해 주세요'};
-    if(!m.gender) return {ok:false, msg:'성별은 필수입니다'};
-    if(!m.mbti) return {ok:false, msg:'MBTI는 필수입니다'};
-    if(!m.position) return {ok:false, msg:'포지션 1개를 선택해 주세요'};
-
-    if(['main_vocal','main_dance','main_rap'].includes(m.position)){
-      if(hasMainPosition(state, m.position)) return {ok:false, msg:'메인 포지션은 각 1명만 가능합니다'};
-    }
-    if(m.isLeader){
-      const leaderId = currentLeaderId(state);
-      if(leaderId) return {ok:false, msg:'리더는 1명만 가능합니다'};
-    }
-    return {ok:true};
-  }
-
-  function addMember(state, m){
-    const v = validateNewMember(state, m);
-    if(!v.ok) return v;
-
-    // weight base for threshold logging
-    const w = Number.isFinite(m.weight) ? m.weight : null;
-    m.meta = m.meta || {};
-    if(m.meta.weightBase == null) m.meta.weightBase = w;
-
-    state.members.push(m);
-
-    // Initialize relations with others
-    for(const other of state.members){
-      if(other.id === m.id) continue;
-      const key = pairKey(m.id, other.id);
-      if(!state.relations[key]){
-        state.relations[key] = {
-          affection: 0,
-          dating: false,
-          coldUntilDay: 0,
-          jealousyTargetId: null
-        };
-      }
-    }
-    return {ok:true};
-  }
-
-  function removeMember(state, id){
-    state.members = state.members.filter(m => m.id !== id);
-
-    // remove relations involving id
-    const next = {};
-    for(const k of Object.keys(state.relations)){
-      if(k.includes(id)) continue;
-      next[k] = state.relations[k];
-    }
-    state.relations = next;
-
-    // clear album assignments
-    if(state.album.composerId === id) state.album.composerId = null;
-    if(state.album.arrangerId === id) state.album.arrangerId = null;
-
-    // clear manual assignments
-    if(state.manual && state.manual.assignments){
-      delete state.manual.assignments[id];
-    }
-  }
-
-  function pairKey(a,b){
-    return [a,b].sort().join('|');
-  }
-
-  function getRelation(state, aId, bId){
-    const key = pairKey(aId,bId);
-    if(!state.relations[key]){
-      state.relations[key] = {affection:0, dating:false, coldUntilDay:0, jealousyTargetId:null};
-    }
-    return state.relations[key];
-  }
-
-  function setLeader(state, id){
-    for(const m of state.members){
-      m.isLeader = (m.id === id);
-    }
-  }
-
-  window.MemberSystem = {
-    positionLabel,
-    addMember,
-    removeMember,
-    pairKey,
-    getRelation,
-    setLeader
+function createMember(data) {
+  const stats = {
+    vocal: Number(data.vocal) || 0,
+    dance: Number(data.dance) || 0,
+    rap: Number(data.rap) || 0,
+    looks: Number(data.looks) || 0,
+    charm: Number(data.charm) || 0,
+    songwriting: Number(data.songwriting) || 0,
+    arrangement: Number(data.arrangement) || 0
   };
-})();
+  const w = Math.round(parseFloat(data.weight) * 100) / 100;
+  return {
+    id: genMemberId(),
+    name: data.name.trim(),
+    gender: data.gender,
+    mbti: data.mbti,
+    height: Number(data.height),
+    weight: w,
+    weightBase: w,
+    position: data.position,
+    isLeader: !!data.isLeader,
+    stats,
+    condition: { stamina: 100, fatigue: 0, stress: 0 },
+    lastPractice: { vocal: null, dance: null, rap: null, songwriting: null, arrangement: null },
+    weightHistory: []
+  };
+}
+
+function validateMemberData(data, existingMembers, editingId) {
+  const errors = [];
+  if (!data.name || !data.name.trim()) errors.push('이름을 입력해주세요');
+  if (!data.gender) errors.push('성별을 선택해주세요');
+  if (!data.mbti) errors.push('MBTI를 선택해주세요');
+  if (!data.height || isNaN(data.height) || Number(data.height) <= 0) errors.push('키를 올바르게 입력해주세요');
+  if (!data.weight || isNaN(data.weight) || Number(data.weight) <= 0) errors.push('몸무게를 올바르게 입력해주세요');
+  if (!data.position || !VALID_POSITIONS.includes(data.position)) errors.push('포지션을 선택해주세요');
+
+  const statFields = ['vocal','dance','rap','looks','charm','songwriting','arrangement'];
+  const statLabels = ['보컬','댄스','랩','외모','끼','작사작곡','편곡'];
+  statFields.forEach((f,i) => {
+    const v = data[f];
+    if (v === '' || v === undefined || v === null) errors.push(`${statLabels[i]} 능력치를 입력해주세요`);
+    else if (isNaN(Number(v)) || Number(v) < 0) errors.push(`${statLabels[i]} 능력치는 0 이상이어야 합니다`);
+  });
+
+  return errors;
+}
+
+function checkUniquePositionConflict(position, existingMembers, editingId) {
+  if (!UNIQUE_POSITIONS.includes(position)) return null;
+  const conflict = existingMembers.find(m => m.position === position && m.id !== editingId);
+  return conflict || null;
+}
+
+window.MembersModule = {
+  VALID_POSITIONS,
+  UNIQUE_POSITIONS,
+  MBTI_LIST,
+  josa,
+  createMember,
+  validateMemberData,
+  checkUniquePositionConflict,
+  genMemberId
+};
