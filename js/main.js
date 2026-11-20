@@ -59,9 +59,11 @@ function init() {
   renderAll();
 
   // 탭 이벤트
-  document.querySelectorAll('.tab-btn').forEach(btn => {
+  document.querySelectorAll('.tab-btn, .bnav-btn[data-tab]').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
+  const moreBtn = document.querySelector('.bnav-btn[data-more]');
+  if (moreBtn) moreBtn.addEventListener('click', openMoreSheet);
 
   // 헤더 실시간 동기화
   setInterval(syncHeader, 600);
@@ -82,8 +84,13 @@ function syncHeader() {
 // 탭
 // ═══════════════════════════════════════════════════════
 function switchTab(tabId) {
-  document.querySelectorAll('.tab-btn').forEach(b =>
+  document.body.dataset.tab = tabId;
+  document.querySelectorAll('.tab-btn, .bnav-btn[data-tab]').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === tabId));
+  // 더보기에 속한 탭이면 더보기 버튼을 활성 표시
+  const moreBtn = document.querySelector('.bnav-btn[data-more]');
+  if (moreBtn) moreBtn.classList.toggle('active', tabId === 'settings' || tabId === 'log');
+  window.scrollTo(0, 0);
   document.querySelectorAll('.tab-panel').forEach(p =>
     p.classList.toggle('active', p.id === 'tab-' + tabId));
   if (tabId === 'relations') {
@@ -94,6 +101,18 @@ function switchTab(tabId) {
   }
 }
 
+window.switchTab = switchTab;
+window.openMoreSheet = function() {
+  const sh = getEl('more-sheet'); if (!sh) return;
+  const ic = getEl('more-theme-ic');
+  if (ic) ic.textContent = APP.state && APP.state.theme === 'dark' ? '☀️' : '🌙';
+  sh.classList.add('open'); sh.setAttribute('aria-hidden', 'false');
+};
+window.closeMoreSheet = function() {
+  const sh = getEl('more-sheet'); if (!sh) return;
+  sh.classList.remove('open'); sh.setAttribute('aria-hidden', 'true');
+};
+
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t || 'light');
 }
@@ -102,6 +121,7 @@ function applyTheme(t) {
 // 전체 렌더링
 // ═══════════════════════════════════════════════════════
 function renderAll() {
+  syncHeader();
   renderDashboard();
   renderMembersTab();
   renderScheduleTab();
@@ -1166,6 +1186,7 @@ window.onToggleTheme=function(){
   showToast('테마를 변경했습니다');
   const btn=getEl('header-theme-btn');
   if(btn) btn.textContent=s.theme==='dark'?'☀️':'🌙';
+  const mic=getEl('more-theme-ic'); if(mic) mic.textContent=s.theme==='dark'?'☀️':'🌙';
 };
 
 // ═══════════════════════════════════════════════════════
@@ -1438,7 +1459,7 @@ function showModal(html, allowClose=true){
 window.closeModal=function(){
   const ov=getEl('modal-overlay'); if(ov)ov.classList.remove('active');
 };
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&_allowClose)closeModal();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeMoreSheet();if(_allowClose)closeModal();}});
 
 // ═══════════════════════════════════════════════════════
 // 시작
